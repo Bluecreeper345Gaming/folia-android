@@ -1,7 +1,0 @@
-{
-  "folium": 1,
-  "id": "beta-signature-fixture",
-  "name": "Beta signature fixture",
-  "version": "1.0.0",
-  "client": "client.mjs"
-}
