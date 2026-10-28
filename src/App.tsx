@@ -9,6 +9,7 @@ import AddToPlaylistHost from './components/app/AddToPlaylistHost';
 import { useCommandPalette } from './components/command-palette/useCommandPalette';
 import { useCommandPaletteContext } from './hooks/useCommandPaletteContext';
 import { useReducedMotionFor } from './hooks/useReducedMotionFor';
+import { useNativeBackButton } from './hooks/useNativeBackButton';
 import AppShell from './components/app/AppShell';
 import Home from './components/app/Home';
 import PlayerPanel from './components/app/PlayerPanel';
@@ -32,6 +33,8 @@ import LegacyModelsPrompt from './components/modal/LegacyModelsPrompt';
 import { PlaybackEntryViewPrompt } from './components/modal/playback-entry-view/PlaybackEntryViewPrompt';
 import { LatticeFmNotice } from './components/modal/playback-entry-view/LatticeFmNotice';
 import { useStartupExperienceGate } from './hooks/useStartupExperienceGate';
+import { useSiteUpdateCheck } from './hooks/useSiteUpdateCheck';
+import SiteUpdateDialog from './components/modal/SiteUpdateDialog';
 import { useAppDialogsModel } from './components/app/dialogs/useAppDialogsModel';
 import { useHomeModel } from './components/app/home/useHomeModel';
 import { createLyricFilterPatternSaver } from './components/app/home/createLyricFilterPatternSaver';
@@ -145,6 +148,7 @@ import { selectSleepTimerSnapshot, useSleepTimerStore } from './stores/useSleepT
 import { selectStageSettingsSnapshot, useStageSettingsStore } from './stores/useStageSettingsStore';
 import { selectAudioSettingsSnapshot, useAudioSettingsStore } from './stores/useAudioSettingsStore';
 import { useSettingsModalStore } from './stores/useSettingsModalStore';
+import { useAppUpdatePromptStore } from './stores/useAppUpdatePromptStore';
 import { audioBands, audioPower, bass, currentTime, lowMid, lyricCurrentTime, mid, spectrum, treble, vocal } from './stores/motionSignals';
 import { useAppChromeStore } from './stores/useAppChromeStore';
 import { useAppViewStore } from './stores/useAppViewStore';
@@ -171,6 +175,7 @@ import { usePlayerBottomBarOffset } from './hooks/usePlayerBottomBarOffset';
 import { usePlayerBottomBarPositioningEntry } from './hooks/usePlayerBottomBarPositioningEntry';
 import { PlayerBottomBarLayoutContext } from './components/floating-player/PlayerBottomBarLayoutContext';
 import { useFoliumHostBridge } from './mods/runtime/hostBridge';
+import { refreshPrefetchAfterQueueEdit } from './services/prefetchService';
 import { useFoliumHostActions } from './mods/runtime/hostActions';
 import { FoliumStageLayerSlot } from './mods/folium/registries/stageLayers';
 import { errorFields } from './utils/errorText';
@@ -304,6 +309,12 @@ export default function App() {
     }, [automixEnabled, transitionMode]);
 
     const startupExperience = useStartupExperienceGate();
+    // 问站点有没有新版本；读不到或本机已是最新就静默结束。
+    useSiteUpdateCheck();
+    const siteUpdateVersion = useAppUpdatePromptStore(state => state.pendingVersion);
+    const dismissSiteUpdate = useCallback(() => {
+        useAppUpdatePromptStore.setState({ pendingVersion: null, pendingNotes: '', pendingDownloadUrl: '' });
+    }, []);
 
     useEffect(() => initializeSyncCoordinator(), []);
 
@@ -477,6 +488,7 @@ export default function App() {
     const {
         visualizerMode,
         randomVisualizerModePerSong,
+        randomVisualizerModes,
         handleSetVisualizerMode,
     } = useVisualizerSettingsStore(useShallow(selectVisualizerSettingsSnapshot));
 
@@ -512,6 +524,7 @@ export default function App() {
         currentSong,
         enabled: randomVisualizerModePerSong,
         visualizerMode,
+        modes: randomVisualizerModes,
         setVisualizerMode: handleSetVisualizerMode,
     });
 
@@ -701,6 +714,8 @@ export default function App() {
         popCollectionTo,
         backCollection,
     } = useAppNavigation();
+    // 手机端的返回（手势 / 三键）先关弹窗与面板，再沿应用历史一层层退回，回到主界面才退出程序。
+    useNativeBackButton();
     const reduceLatticeMotion = useReducedMotionFor('lattice');
     const visualizerAroundWall = useVisualizerAroundWall();
 
@@ -2072,6 +2087,8 @@ export default function App() {
         isLiked: commandPaletteContext.playback.isSongLiked,
         controlsDisabled: isNowPlayingControlDisabled,
         isLyricsLoading,
+        persistQueue: persistLastPlaybackCache,
+        refreshQueuePrefetch: (song, previous, next) => refreshPrefetchAfterQueueEdit(song, previous, next, audioQuality, user?.id),
     });
 
     const visualizerRendererModel = useVisualizerRendererModel({
@@ -2908,6 +2925,12 @@ export default function App() {
                 isOpen={startupExperience.isReleaseNotesOpen}
                 isDaylight={isDaylight}
                 onClose={startupExperience.closeReleaseNotes}
+            />
+            {/* 站点上发了比本机新的版本：提示一次，跳过后第二天才再提。 */}
+            <SiteUpdateDialog
+                isOpen={siteUpdateVersion !== null}
+                isDaylight={isDaylight}
+                onClose={dismissSiteUpdate}
             />
             <UserGuideModal theme={theme} />
             <PlaybackEntryViewPrompt theme={theme} />

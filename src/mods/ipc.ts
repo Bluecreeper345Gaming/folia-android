@@ -1,10 +1,13 @@
+import { androidModsBridge } from './android/androidModsBridge';
 import type {
     ModClearCacheResult,
     ModFfmpegStatus,
     ModLogEntry,
     ModMainCallStats,
+    ModRpcMessage,
     ModRuntimeInfo,
     ModRuntimeSnapshot,
+    ModSecretChange,
     ModSetEnabledResult,
     ModStorageUsageResult,
     ModsListPayload,
@@ -15,10 +18,14 @@ import type {
 // Typed access to the preload bridge under window.electron.mods. Every call
 // degrades to a safe fallback on the web build so the panel stays renderable
 // even when no Electron bridge exists (the UI then shows a desktop-only hint).
+// On the Android app the same calls are answered inside the window by
+// android/androidModsBridge.ts, which stands in for the main process there.
 
-const bridge = (): NonNullable<typeof window.electron>['mods'] => window.electron?.mods;
+const bridge = (): NonNullable<typeof window.electron>['mods'] => (
+    window.electron?.mods ?? (androidModsBridge() as NonNullable<typeof window.electron>['mods'] | null) ?? undefined
+);
 
-export const isModsBridgeAvailable = (): boolean => Boolean(window.electron?.mods);
+export const isModsBridgeAvailable = (): boolean => Boolean(window.electron?.mods ?? androidModsBridge());
 
 const EMPTY_PAYLOAD: ModsListPayload = {
     mods: [],
@@ -123,6 +130,19 @@ export const invokeModStorage = async (
 ): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
     bridge()?.invokeModStorage(modId, operation, key, value) ?? { ok: false, error: 'no-electron-bridge' };
 
+/**
+ * Folium 1.7: a mod's `secret` settings values, kept in the main process (electron/modSystem/modSecrets.cjs).
+ * `declare` passes the `secret` keys of a settings section the mod registered (`key` is the list);
+ * `state` answers a ModSecretsState.
+ */
+export const invokeModSecrets = async (
+    modId: string,
+    operation: 'get' | 'has' | 'set' | 'declare' | 'state',
+    key?: string | readonly string[],
+    value?: string | null,
+): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+    bridge()?.invokeModSecrets(modId, operation, key, value) ?? { ok: false, error: 'no-electron-bridge' };
+
 /** folium.net.fetch: runs in the main process (permission `net.fetch`). */
 export const invokeModNetFetch = async (
     modId: string,
@@ -187,6 +207,20 @@ export const installModFromZip = async (
     return response ?? { ok: false, error: 'no-electron-bridge' };
 };
 
+/**
+ * The Android app's install path: the picker's file comes as bytes, unpacked in the window by
+ * android/androidModsBridge.ts (the desktop keeps its path-based install above).
+ */
+export const installModFromZipFile = async (
+    file: File,
+): Promise<{ ok: boolean; id?: string; error?: string }> => {
+    const installer = (bridge() as unknown as {
+        installModFromZipFile?: (picked: File) => Promise<{ ok: boolean; id?: string; error?: string }>;
+    } | undefined)?.installModFromZipFile;
+    if (!installer) return { ok: false, error: 'install-no-path' };
+    return installer(file);
+};
+
 /** Bytes a mod keeps on disk (data and cache); disabled mods included, broken entries refused. */
 export const getModStorageUsage = async (modId: string): Promise<ModStorageUsageResult> => {
     const response = await bridge()?.getModStorageUsage(modId);
@@ -208,3 +242,10 @@ export const subscribeExportProgress = (callback: (progress: ModExportProgress) 
 export const subscribeModLogs = (callback: (entry: ModLogEntry) => void): (() => void) =>
     bridge()?.onModLog(callback) ?? (() => {});
 
+/** Messages main entries push with `api.rpc.send`; folium/rpcMessages.ts hands each to its own mod. */
+export const subscribeModRpcMessages = (callback: (message: ModRpcMessage) => void): (() => void) =>
+    bridge()?.onModRpcMessage?.(callback) ?? (() => {});
+
+/** Folium 1.7: a mod's `secret` value was saved or cleared, by anyone; the key only. */
+export const subscribeModSecretChanges = (callback: (change: ModSecretChange) => void): (() => void) =>
+    bridge()?.onModSecretChanged?.(callback) ?? (() => {});

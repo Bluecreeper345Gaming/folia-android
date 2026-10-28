@@ -86,7 +86,11 @@
   - `@lox-audioserver/node-librespot` 0.5.1，在根目录 `package.json` 的 `optionalDependencies`：没有现成构建的系统上装不上也不让整个安装失败。现成构建是 win32-x64、darwin-arm64、linux-x64 和 linux-arm64（glibc），没有 darwin-x64；打包时这些 `.node` 文件放在 `asarUnpack` 里。
 - **我们包了什么**：查询和改动只能经桥接层发，页面只能发 `QUERIES` 里的名字；token 不出主进程。歌曲缓存存的是 Spotify 加密过的文件，密钥不落盘（`audioFiles.cjs`）。
 - **上游变了怎么跟**：
-  - Spotify 换掉一个查询时答复里带 `PersistedQueryNotFound`，主进程记一行 `[Spotify] query <名字> failed`。要改的是 `QUERIES` 里那个哈希，以及 `spotify/spotifyNormalize.ts` 里读答复的地方。新的哈希从哪里读到，代码和文档都没写：不清楚。
+  - Spotify 换掉一个查询时答复里带 `PersistedQueryNotFound`，主进程记一行 `[Spotify] query <名字> failed`。要改的是 `QUERIES` 里那个哈希，以及 `spotify/spotifyNormalize.ts` 里读答复的地方。
+  - 新的哈希从哪里读到：网页播放器的 JS 里全都有。抓 `https://open.spotify.com/` 的 `web-player.<hash>.js`，按 `new <mod>.l("<名字>","query","<sha256>",null)` 正则抽；路由页的查询在 bundle 内 `u.u=e=>""+({名字表})[e]+"."+({哈希表})[e]+".js"` 那张 chunk 表指向的 89 个 chunk 里。2026-10-22 实测的过程、全量 172 个 operation、每个操作要的变量和真回包大小都记在 [`docs/spotify-capture/README.md`](../../../docs/spotify-capture/README.md)。
+  - 同一次实测还发现：`client-token` 已经不需要了（播放器 bundle 里没有这个头），只带 `Authorization: Bearer <token>` 就能打 pathfinder；公开 Web API 仍然 429。
+  - 手机版没有 `node-librespot`，音频由 `spotify/spotifyAudio.ts` 自己做：`metadata/4/track` 拿文件 id 与格式 → `storage-resolve/files/audio/interactive/<id>` 拿 CDN 地址 → `playplay/v1/key/<id>` 拿 AES 钥匙 → 页面里用 WebCrypto 按 AES-128-CTR 解开（计数器 `72e067fb…`，丢掉前 0xa7 字节）、交给 `<audio>`。librespot 的钥匙其实走 AP 私有连接（DH + Shannon），playplay 是 HTTPS 近路，还没在 Premium 账号上实测过。
+  - **免费账号拿不到音频**（2026-10-22 实测：`metadata/4/track` 的 `file` 是空的，`product_state` 回 `"product":"free"`）。这时 `spotify/spotifyReplacement.ts` 去别的平台找同一首歌，由换源对话框让用户确认（`playback.getReplacement`，`usePlaybackQueueController` 的 `CASE_MAY_HAVE_REPLACEMENT` 分支）。Spotify 只当目录，声音是别人的——和 Mineradio 的 `recommend-match` 一个路子。
   - `test/unit/spotify/` 下的测试（`spotifyApiBridge.test.ts`、`spotifyAudio.test.ts`、`spotifyAudioFiles.test.ts` 等）用替身，抓不到 Spotify 改了查询或答复。
   - 升级 node-librespot 前看它支持哪些系统；平台条目里的实测在同目录 `README.md` 的 `spotify/spotifyProvider.ts` 一条。
 

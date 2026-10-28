@@ -153,9 +153,13 @@ export async function searchQQSongs(keyword: string, page = 1, pageSize = 20): P
         id: Number(info.album?.id || 0),
         name: info.album?.name || 'Unknown Album',
         coverUrl: picUrl,
+        // 专辑 mid 是导航与播放要的键，数字 albumid 只在完全没有 mid 时才用
+        ...(albumMid ? { mid: albumMid } : {}),
       },
       durationMs: (info.interval || 0) * 1000,
       qqMid: info.mid,
+      // file 里带着 media_mid：播放链接的 filename 由它拼，丢了它这些歌会拿不到链接
+      ...(info.file ? { file: info.file } : {}),
     };
   });
 }

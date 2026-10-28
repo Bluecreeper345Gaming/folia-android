@@ -96,7 +96,7 @@ const audioQualityFor = (providerId: OmniProviderId, preference: AudioQualityPre
 // got the URL from (the prefetch pass, or its own request). In memory and bounded; a URL that has
 // dropped out is of an unknown level and not known to be a clip.
 const AUDIO_SOURCE_LEVEL_LIMIT = 200;
-type HandedOutAudioSource = { level: AudioQualityPreference; preview: boolean };
+type HandedOutAudioSource = { level: AudioQualityPreference; preview: boolean; clipStartMs?: number };
 const audioSourceLevels = new Map<string, HandedOutAudioSource>();
 // One spelling per URL: the form playback holds (`toSafePlaybackUrl`), written as the URL parser
 // writes it - a deck that has played out reports its element's `currentSrc`, which is that form.
@@ -838,6 +838,8 @@ export const omni = {
             noteAudioSourceLevel(source.url, {
                 level: listed?.includes(source.quality) ? source.quality : level,
                 preview: Boolean(source.preview),
+                ...(source.preview && Number.isFinite(source.clipStartMs) && source.clipStartMs! > 0
+                    ? { clipStartMs: source.clipStartMs } : {}),
             });
         }
         // Extension layers (Folium omni hooks) may swap the URL; the ReplayGain above stays the provider's.
@@ -854,6 +856,12 @@ export const omni = {
     // said. False for any other URL, as for one handed out too long ago to be remembered.
     isPreviewAudioSource(url: string): boolean {
         return audioSourceLevels.get(audioSourceLevelKey(url))?.preview === true;
+    },
+
+    // Where a URL handed out by `getAudioSource` starts inside its song, for a preview clip; 0 for a
+    // whole song, any other URL, and one handed out too long ago to be remembered.
+    previewClipStartMsOfAudioSource(url: string): number {
+        return Math.max(0, audioSourceLevels.get(audioSourceLevelKey(url))?.clipStartMs ?? 0);
     },
 
     // Asked once per track, including for local and Navidrome songs, so an unsupported source is a

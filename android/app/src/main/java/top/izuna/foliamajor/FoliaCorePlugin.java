@@ -43,9 +43,11 @@ import java.io.FileOutputStream;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.Headers;
@@ -159,6 +161,445 @@ public class FoliaCorePlugin extends Plugin {
         }
     }
 
+    /**
+     * 打开应用内的登录页：用本应用自己的 WebView，所以登录后的 Cookie 落在同一个
+     * CookieManager 里——原生桥的 OkHttp 和 WebView 共用它，拿到的会话立刻可用。
+     * 到达 successHost 后返回该站点整串 Cookie；用户关掉窗口则返回 null。
+     */
+    @PluginMethod
+    public void openWebLogin(PluginCall call) {
+        final String url = call.getString("url",
+            "https://accounts.google.com/ServiceLogin?hl=zh-CN&continue=https%3A%2F%2Fmusic.youtube.com%2F");
+        final String successHost = call.getString("successHost", "music.youtube.com");
+        final Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("No activity");
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            android.util.Log.i("FoliaSpotify", "openWebRedirect: building the window");
+            // 默认主题的 Dialog + 显式铺满：DeviceDefault 的全屏主题在部分 OEM 上不显示窗口。
+            final android.app.Dialog dialog = new android.app.Dialog(activity);
+            final WebView web = new WebView(activity);
+            web.getSettings().setJavaScriptEnabled(true);
+            web.getSettings().setDomStorageEnabled(true);
+            web.getSettings().setDatabaseEnabled(true);
+            CookieManager.getInstance().setAcceptCookie(true);
+            CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
+
+            final boolean[] settled = { false };
+            final Runnable finish = () -> {
+                if (settled[0]) return;
+                settled[0] = true;
+                try { dialog.dismiss(); } catch (Exception ignored) { }
+                try { web.destroy(); } catch (Exception ignored) { }
+            };
+
+            web.setWebViewClient(new android.webkit.WebViewClient() {
+                private boolean arrived(String target) {
+                    if (target == null) return false;
+                    // 必须按主机名判：登录页的 continue 参数里就写着 music.youtube.com，
+                    // 用 contains 会在第一次加载 accounts.google.com 时就误判成"已到站"。
+                    String host = null;
+                    try {
+                        host = android.net.Uri.parse(target).getHost();
+                    } catch (Exception ignored) {
+                    }
+                    if (host == null) return false;
+                    boolean onSite = host.equalsIgnoreCase(successHost)
+                        || host.toLowerCase(java.util.Locale.ROOT).endsWith("." + successHost);
+                    if (!onSite) return false;
+                    CookieManager.getInstance().flush();
+                    String cookie = CookieManager.getInstance().getCookie("https://" + successHost + "/");
+                    // 刚落地时 Set-Cookie 可能还没落进 CookieManager：最多等 1.5 秒看会话 Cookie 有没有来。
+                    for (int attempt = 0; attempt < 15 && (cookie == null || cookie.isEmpty()); attempt += 1) {
+                        try { Thread.sleep(100); } catch (InterruptedException ignored) { }
+                        cookie = CookieManager.getInstance().getCookie("https://" + successHost + "/");
+                    }
+                    /*
+                     * 到了站上不等于登进去了：登录入口现在就是 music.youtube.com（要走 Google 的
+                     * 账号选择器），未登录时它一加载就会命中这个回调。所以只有 Cookie 里真的带着
+                     * Google 会话（SAPISID / __Secure-3PAPISID）才算完成，否则把窗口留给用户去登录。
+                     */
+                    if (!hasGoogleSessionCookie(cookie)) {
+                        android.util.Log.i("FoliaLogin", "on site without a session cookie yet, keeping the window open");
+                        return false;
+                    }
+                    finish.run();
+                    JSObject result = new JSObject();
+                    result.put("cookie", cookie == null ? "" : cookie);
+                    call.resolve(result);
+                    return true;
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
+                    return arrived(request.getUrl() == null ? null : request.getUrl().toString());
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, String target) {
+                    return arrived(target);
+                }
+
+                @Override
+                public void onPageFinished(WebView view, String target) {
+                    super.onPageFinished(view, target);
+                    arrived(target);
+                }
+            });
+
+            dialog.setOnCancelListener(d -> {
+                finish.run();
+                JSObject result = new JSObject();
+                result.put("cookie", null);
+                call.resolve(result);
+            });
+            dialog.setContentView(web);
+            dialog.show();
+            web.loadUrl(url);
+        });
+    }
+
+    /** 整串 Cookie 里有没有 Google 的会话（SAPISID / __Secure-3PAPISID）。 */
+    private static boolean hasGoogleSessionCookie(String cookie) {
+        if (cookie == null || cookie.isEmpty()) return false;
+        for (String part : cookie.split(";")) {
+            String name = part.trim().split("=", 2)[0];
+            if (("SAPISID".equals(name) || "__Secure-3PAPISID".equals(name)) && part.indexOf('=') > 0
+                && part.substring(part.indexOf('=') + 1).trim().length() > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 取 Spotify 的 `client-token`：pathfinder 现在要求请求带它，而它只由 Spotify 自己的网页播放器拿。
+     *
+     * 做法：开一个 1x1 透明 WebView 加载 open.spotify.com，注入脚本钩住 fetch / XHR，
+     * 把网页播放器自己发出的 `client-token` 请求头抄下来，拿到就销毁这个 WebView。
+     * 拿不到就回空串（调用方按没有 token 走，行为与以前一致）。
+     */
+    @PluginMethod
+    public void spotifyClientToken(PluginCall call) {
+        final Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("No activity");
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            final WebView web = new WebView(activity);
+            final android.webkit.WebSettings settings = web.getSettings();
+            settings.setJavaScriptEnabled(true);
+            settings.setDomStorageEnabled(true);
+            settings.setDatabaseEnabled(true);
+            settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+            CookieManager.getInstance().setAcceptCookie(true);
+            CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
+            final boolean visible = Boolean.TRUE.equals(call.getBoolean("visible", false));
+            web.setAlpha(visible ? 1f : 0f);
+            web.setLayoutParams(new android.widget.FrameLayout.LayoutParams(
+                visible ? android.view.ViewGroup.LayoutParams.MATCH_PARENT : 1,
+                visible ? android.view.ViewGroup.LayoutParams.MATCH_PARENT : 1));
+
+            final String hook = "(function(){"
+                + "if(window.__foliaHooked)return;window.__foliaHooked=true;"
+                + "window.__foliaClientToken=window.__foliaClientToken||'';"
+                + "var grab=function(v){try{if(v&&String(v).length>20)window.__foliaClientToken=String(v);}catch(e){}};"
+                + "var pick=function(list){try{"
+                + "if(!list)return;"
+                + "if(typeof list.forEach==='function'&&!Array.isArray(list)){list.forEach(function(v,k){if(String(k).toLowerCase()==='client-token')grab(v);});return;}"
+                + "if(Array.isArray(list)){list.forEach(function(p){if(p&&String(p[0]).toLowerCase()==='client-token')grab(p[1]);});return;}"
+                + "if(typeof list==='object'){Object.keys(list).forEach(function(k){if(String(k).toLowerCase()==='client-token')grab(list[k]);});}"
+                + "}catch(e){}};"
+                + "var of=window.fetch;window.fetch=function(input,init){try{pick(init&&init.headers);pick(input&&input.headers);}catch(e){}return of.apply(this,arguments);};"
+                + "var sp=XMLHttpRequest.prototype.setRequestHeader;"
+                + "XMLHttpRequest.prototype.setRequestHeader=function(name,value){try{if(String(name).toLowerCase()==='client-token')grab(value);}catch(e){}return sp.apply(this,arguments);};"
+                + "})();";
+
+            final boolean[] settled = { false };
+            final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+            final int[] attempts = { 0 };
+            // 可见模式下用户可能还要登录，给两分钟；隐藏模式只是探一下，十五秒就够。
+            final int limit = visible ? 240 : 30;
+            final android.app.Dialog[] holder = new android.app.Dialog[1];
+            final Runnable cleanup = () -> {
+                try { web.stopLoading(); } catch (Exception ignored) { }
+                try { if (holder[0] != null) holder[0].dismiss(); } catch (Exception ignored) { }
+                try { ((android.view.ViewGroup) web.getParent()).removeView(web); } catch (Exception ignored) { }
+                try { web.destroy(); } catch (Exception ignored) { }
+            };
+            final Runnable finish = () -> {
+                if (settled[0]) return;
+                settled[0] = true;
+                web.evaluateJavascript("window.__foliaClientToken||''", value -> {
+                    String token = value == null ? "" : value.trim();
+                    if (token.startsWith("\"") && token.endsWith("\"") && token.length() > 1) {
+                        token = token.substring(1, token.length() - 1);
+                    }
+                    if ("null".equals(token)) token = "";
+                    android.util.Log.i("FoliaSpotify", "client-token: " + (token.isEmpty() ? "none" : token.length() + " chars"));
+                    // 调试用：把结果写到应用外部目录，便于排查（不含任何账号凭据，拿不到就写 none）。
+                    try {
+                        java.io.File probe = new java.io.File(
+                            activity.getExternalFilesDir(null), "spotify-client-token.txt");
+                        java.io.FileWriter writer = new java.io.FileWriter(probe, false);
+                        writer.write(token.isEmpty() ? "none" : token);
+                        writer.close();
+                    } catch (Exception ignored) { }
+                    cleanup.run();
+                    JSObject result = new JSObject();
+                    result.put("token", token);
+                    call.resolve(result);
+                });
+            };
+            final Runnable[] poll = new Runnable[1];
+            poll[0] = () -> {
+                if (settled[0]) return;
+                attempts[0] += 1;
+                web.evaluateJavascript("window.__foliaClientToken||''", value -> {
+                    String token = value == null ? "" : value.trim();
+                    if (token.length() > 22 && !"null".equals(token)) {
+                        finish.run();
+                        return;
+                    }
+                    if (attempts[0] >= limit) {
+                        finish.run();
+                        return;
+                    }
+                    handler.postDelayed(poll[0], 500);
+                });
+            };
+
+            web.setWebViewClient(new android.webkit.WebViewClient() {
+                @Override
+                public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
+                    super.onPageStarted(view, url, icon);
+                    view.evaluateJavascript(hook, null);
+                }
+
+                @Override
+                public void onPageFinished(WebView view, String url) {
+                    super.onPageFinished(view, url);
+                    view.evaluateJavascript(hook, null);
+                }
+            });
+
+            if (visible) {
+                android.app.Dialog dialog = new android.app.Dialog(activity);
+                holder[0] = dialog;
+                dialog.setContentView(web);
+                dialog.show();
+                if (dialog.getWindow() != null) {
+                    dialog.getWindow().setLayout(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT);
+                }
+            } else {
+                try {
+                    ((android.view.ViewGroup) activity.findViewById(android.R.id.content)).addView(web);
+                } catch (Exception error) {
+                    android.util.Log.w("FoliaSpotify", "client-token: cannot attach the web view: " + error.getMessage());
+                }
+            }
+            web.loadUrl("https://open.spotify.com/");
+            handler.postDelayed(poll[0], 1200);
+        });
+    }
+
+    /** 等浏览器跳回 127.0.0.1 的那次请求用的服务（Spotify 登录）。 */
+    private static java.net.ServerSocket spotifyLoopback;
+    private static Thread spotifyLoopbackThread;
+    private static PluginCall spotifyLoginCall;
+
+    /**
+     * Spotify 登录：本机起一个小服务等浏览器跳回，再用系统浏览器打开授权页。
+     *
+     * 桌面版就是这条路（electron/spotify/signIn.cjs：127.0.0.1:5588 上的服务收 code）。
+     * 手机上用应用内 WebView 弹窗会被 OEM 的窗口策略挡住（实测窗口没出现），
+     * 换成系统浏览器后，跳回 127.0.0.1:5588/login 的请求由这个服务直接接住。
+     */
+    @PluginMethod
+    public void openSpotifyLogin(PluginCall call) {
+        final String url = call.getString("url", "");
+        final String redirectPrefix = call.getString("redirectPrefix", "http://127.0.0.1:5588/login");
+        if (url == null || url.isEmpty()) {
+            call.reject("Missing authorize url");
+            return;
+        }
+        final Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("No activity");
+            return;
+        }
+        int port;
+        try {
+            java.net.URI redirect = java.net.URI.create(redirectPrefix);
+            port = redirect.getPort() > 0 ? redirect.getPort() : 80;
+        } catch (Exception error) {
+            call.reject("Bad redirect uri", error);
+            return;
+        }
+        // 上一次还没结束的，先收掉。
+        stopSpotifyLoopback("");
+        spotifyLoginCall = call;
+        try {
+            final java.net.ServerSocket server = new java.net.ServerSocket(port, 8, java.net.InetAddress.getByName("127.0.0.1"));
+            spotifyLoopback = server;
+            spotifyLoopbackThread = new Thread(() -> {
+                while (!server.isClosed()) {
+                    try (java.net.Socket socket = server.accept()) {
+                        java.io.BufferedReader reader = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
+                        String requestLine = reader.readLine();
+                        if (requestLine == null) continue;
+                        String target = requestLine.split(" ").length > 1 ? requestLine.split(" ")[1] : "";
+                        if (!target.startsWith("/")) continue;
+                        String full = "http://127.0.0.1:" + port + target;
+                        java.io.OutputStream output = socket.getOutputStream();
+                        String page = "<!doctype html><meta charset=\"utf-8\"><title>Folia</title>"
+                            + "<body style=\"margin:0;display:grid;place-items:center;height:100vh;background:#121212;color:#fff;"
+                            + "font:16px system-ui,sans-serif\">已收到 Spotify 的授权，可以回到 Folia 了。</body>";
+                        byte[] body = page.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                        output.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: "
+                            + body.length + "\r\nConnection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                        output.write(body);
+                        output.flush();
+                        if (target.startsWith("/login")) {
+                            android.util.Log.i("FoliaSpotify", "redirect received: " + full);
+                            stopSpotifyLoopback(full);
+                        }
+                    } catch (Exception error) {
+                        if (server.isClosed()) break;
+                        android.util.Log.w("FoliaSpotify", "loopback failed: " + error.getMessage());
+                    }
+                }
+            }, "spotify-loopback");
+            spotifyLoopbackThread.setDaemon(true);
+            spotifyLoopbackThread.start();
+        } catch (Exception error) {
+            android.util.Log.e("FoliaSpotify", "cannot listen on " + port + ": " + error.getMessage());
+            call.reject("Spotify 登录需要 127.0.0.1:" + port + "，但起不来（端口被占？）：" + error.getMessage(), error);
+            return;
+        }
+        android.util.Log.i("FoliaSpotify", "waiting for the redirect on 127.0.0.1:" + port);
+        activity.startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)));
+    }
+
+    /** 收掉登录服务，并把结果交回 JS（`url` 为空表示没等到）。 */
+    private static void stopSpotifyLoopback(String url) {
+        PluginCall waiting = spotifyLoginCall;
+        spotifyLoginCall = null;
+        try {
+            if (spotifyLoopback != null) spotifyLoopback.close();
+        } catch (Exception ignored) { }
+        spotifyLoopback = null;
+        spotifyLoopbackThread = null;
+        if (waiting != null) {
+            JSObject result = new JSObject();
+            result.put("url", url == null ? "" : url);
+            waiting.resolve(result);
+        }
+    }
+
+    /**
+     * 开一个登录窗，拦下**跳回本地**的那一次导航，把整条 URL 交回 JS（Spotify 的 OAuth PKCE）。
+     *
+     * 桌面版在 127.0.0.1:5588 起一个真服务等浏览器回来；手机上没必要：跳回 127.0.0.1 的那一次
+     * 导航被这里截住就行，页面不再真的去连（也就不会有"端口被占"的问题）。
+     */
+    @PluginMethod
+    public void openWebRedirect(PluginCall call) {
+        final String url = call.getString("url", "");
+        final String redirectPrefix = call.getString("redirectPrefix", "http://127.0.0.1:5588/login");
+        if (url == null || url.isEmpty()) {
+            call.reject("Missing login url");
+            return;
+        }
+        final Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("No activity");
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            final android.app.Dialog dialog = new android.app.Dialog(
+                activity, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
+            final WebView web = new WebView(activity);
+            web.getSettings().setJavaScriptEnabled(true);
+            web.getSettings().setDomStorageEnabled(true);
+            web.getSettings().setDatabaseEnabled(true);
+            CookieManager.getInstance().setAcceptCookie(true);
+            CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
+
+            final boolean[] settled = { false };
+            final Runnable finish = () -> {
+                if (settled[0]) return;
+                settled[0] = true;
+                try { dialog.dismiss(); } catch (Exception ignored) { }
+                try { web.destroy(); } catch (Exception ignored) { }
+            };
+
+            web.setWebViewClient(new android.webkit.WebViewClient() {
+                private boolean intercepted(String target) {
+                    if (target == null) return false;
+                    if (!target.startsWith(redirectPrefix)) return false;
+                    android.util.Log.i("FoliaSpotify", "openWebRedirect: redirect caught: " + target);
+                    finish.run();
+                    JSObject result = new JSObject();
+                    result.put("url", target);
+                    call.resolve(result);
+                    return true;
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
+                    return intercepted(request.getUrl() == null ? null : request.getUrl().toString());
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, String target) {
+                    return intercepted(target);
+                }
+
+                @Override
+                public void onPageStarted(WebView view, String target, android.graphics.Bitmap icon) {
+                    super.onPageStarted(view, target, icon);
+                    // 服务端 302 回 127.0.0.1 时不一定走 shouldOverrideUrlLoading，这里兜一层。
+                    if (intercepted(target)) view.stopLoading();
+                }
+
+                @Override
+                public void onPageFinished(WebView view, String target) {
+                    super.onPageFinished(view, target);
+                    intercepted(target);
+                }
+            });
+
+            dialog.setOnCancelListener(d -> {
+                finish.run();
+                JSObject result = new JSObject();
+                result.put("url", "");
+                call.resolve(result);
+            });
+            dialog.setContentView(web);
+            try {
+                dialog.show();
+                if (dialog.getWindow() != null) {
+                    dialog.getWindow().setLayout(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT);
+                }
+                android.util.Log.i("FoliaSpotify", "openWebRedirect: window shown");
+            } catch (Throwable error) {
+                android.util.Log.e("FoliaSpotify", "openWebRedirect: window refused: " + error);
+                call.reject("登录窗口打不开：" + error.getMessage());
+                return;
+            }
+            web.loadUrl(url);
+        });
+    }
+
     @PluginMethod
     public void cookiesGetAll(PluginCall call) {
         String url = call.getString("url", "");
@@ -246,7 +687,7 @@ public class FoliaCorePlugin extends Plugin {
     }
 
     /**
-     * 批量删除 cookie：entries 是 [{url, name}, ...]。
+     * 批量删除 cookie：entries 是 [{url, name, domain?, path?}, ...]。
      *
      * 逐条删除每条都要过一次桥并在原生侧 flush 一次，登录通道切换要清几十条，
      * 累加起来会超过调用方的截止时间，结果只清掉一半。这里在原生侧一次做完。
@@ -269,7 +710,13 @@ public class FoliaCorePlugin extends Plugin {
             String url = entry.optString("url", "");
             String name = entry.optString("name", "");
             if (url == null || url.isEmpty() || name == null || name.isEmpty()) continue;
-            manager.setCookie(url, name + "=; Max-Age=0; path=/");
+            // 域 cookie（SAPISID 这类挂在 .youtube.com 上的）只按 host 删不掉：调用方可以带上 domain。
+            String domain = entry.optString("domain", "");
+            String path = entry.optString("path", "/");
+            StringBuilder value = new StringBuilder(name).append("=; Max-Age=0");
+            if (path != null && !path.isEmpty()) value.append("; path=").append(path);
+            if (domain != null && !domain.isEmpty()) value.append("; domain=").append(domain);
+            manager.setCookie(url, value.toString());
             removed++;
         }
         if (removed > 0) manager.flush();
@@ -486,6 +933,38 @@ public class FoliaCorePlugin extends Plugin {
         try {
             if (localAudioServer == null) localAudioServer = new LocalAudioServer(getContext());
             String localUrl = localAudioServer.registerRemoteAudio(url);
+            JSObject result = new JSObject();
+            result.put("url", localUrl);
+            call.resolve(result);
+        } catch (Exception error) {
+            call.reject(error.getMessage(), error);
+        }
+    }
+
+    /**
+     * 把整首远端音频先下到本地，再把本地流地址交回去（见 LocalAudioServer#registerDownloadedAudio）。
+     * 用于 YouTube Music：它的直链按取地址时的出口 IP 签发，分片过桥取会从第二片起 403。
+     */
+    @PluginMethod
+    public void registerDownloadedAudio(PluginCall call) {
+        String url = call.getString("url", "");
+        if (url == null || url.isEmpty()) {
+            call.reject("Missing audio url");
+            return;
+        }
+        Map<String, String> headers = new HashMap<>();
+        JSObject rawHeaders = call.getObject("headers");
+        if (rawHeaders != null) {
+            Iterator<String> names = rawHeaders.keys();
+            while (names.hasNext()) {
+                String name = names.next();
+                Object value = rawHeaders.opt(name);
+                if (name != null && value != null) headers.put(name, String.valueOf(value));
+            }
+        }
+        try {
+            if (localAudioServer == null) localAudioServer = new LocalAudioServer(getContext());
+            String localUrl = localAudioServer.registerDownloadedAudio(url, headers);
             JSObject result = new JSObject();
             result.put("url", localUrl);
             call.resolve(result);

@@ -7,6 +7,8 @@ import android.view.View;
 import android.view.WindowManager;
 import android.webkit.WebSettings;
 
+import androidx.activity.OnBackPressedCallback;
+
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
 
@@ -21,9 +23,20 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // 调试包开放 WebView 远程调试（Chrome DevTools / CDP），便于在真机上直接排查界面与网络问题。
+        boolean debuggable = (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        if (debuggable) {
+            android.webkit.WebView.setWebContentsDebuggingEnabled(true);
+        }
         registerPlugin(FoliaBridgePlugin.class);
         registerPlugin(FoliaCorePlugin.class);
+        // 锁屏 / 通知栏的歌词通道：Web 层把整条时间轴交过来，由 ColorOsLyricBridge 写进
+        // MediaMetadata["lyricInfo"]。这条线以前只有原生半边，Web 层从没调用过。
+        registerPlugin(top.izuna.foliamajor.coloros.FoliaColorOsLyricsPlugin.class);
         super.onCreate(savedInstanceState);
+        // 应用在前台时保持屏幕常亮：FLAG_KEEP_SCREEN_ON 只作用于本窗口，
+        // 切到后台或锁屏后系统会自动忽略它，不需要额外监听生命周期去清。
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         Bridge bridge = getBridge();
         if (bridge != null && bridge.getWebView() != null) {
             WebSettings ws = bridge.getWebView().getSettings();
@@ -40,6 +53,17 @@ public class MainActivity extends BridgeActivity {
         getWindow().getDecorView().postDelayed(this::applyCutoutMode, 500);
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(visibility -> {
             if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) applyFullscreen();
+        });
+        // 返回键 / 全面屏返回手势先交给 WebView：JS 那边的层（弹窗、搜索、播放页、集合栈）退一层，
+        // 真的回到主界面时由 JS 调 exitApp。emitBackPressed() 返回 false 说明 JS 还没装监听，
+        // 这时才走系统默认（结束 Activity）。
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (FoliaCorePlugin.emitBackPressed()) return;
+                setEnabled(false);
+                getOnBackPressedDispatcher().onBackPressed();
+            }
         });
     }
 

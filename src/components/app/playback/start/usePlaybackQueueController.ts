@@ -53,6 +53,11 @@ import { askedSongKeyRef, askForSong, playsDroppedSoFar, showSong, startOfAskedS
 import { loadOnlineSongAudio } from '../source/songAudioSource';
 import { onlineFailureToast } from '../source/onlineFailureToast';
 import { offersRetry, onlineFailureOf, stopsPlayback, type OnlineFailure } from '../../../../services/onlineMusic/failure/onlineFailureCase';
+
+// 这一首在这一刻放不了、但平台上可能有别的可播版本的几种失败：下架的，以及这个账号没有播放权的
+// （会员、购买、地区、平台根本没给音频）。这几种在报错之前先找一次同曲，找到了就由对话框让用户选。
+// 登录过期和服务没配好不算：换一首也一样放不了。
+const CASE_MAY_HAVE_REPLACEMENT = new Set(['taken-down', 'subscription-required', 'purchase-required', 'entitlement-required', 'no-audio', 'region-restricted']);
 import { openLoginWindow } from '../../../login/loginWindowStore';
 import { useTranslation } from 'react-i18next';
 import { currentTime } from '../../../../stores/motionSignals';
@@ -637,6 +642,7 @@ export function usePlaybackQueueController({
                     replacementSong: replacement.song,
                     replacementSongId: replacement.song.id,
                     typeDesc: replacement.label,
+                    why: shown.case === 'taken-down' ? 'taken-down' : 'unplayable',
                     queue: queueContext,
                     isFmCall,
                     options: deferredPlayOptions,
@@ -741,14 +747,17 @@ export function usePlaybackQueueController({
 
             if (preloadedOnlineAudioResult.kind === 'unavailable') {
                 const shown = preloadedOnlineAudioResult.failure;
-                if (shown.case === 'taken-down') await presentTakenDown(shown);
+                if (CASE_MAY_HAVE_REPLACEMENT.has(shown.case)) await presentTakenDown(shown);
                 else presentOnlineFailure(shown);
                 return;
             }
         } catch (error) {
             if (!isLatestPlaybackRequest()) return;
             console.error('[App] Failed to fetch song URL:', error);
-            presentOnlineFailure(onlineFailureOf({ operation: 'audio', providerId }, { error }));
+            const shown = onlineFailureOf({ operation: 'audio', providerId }, { error });
+            // 这一首在这个账号上放不了（会员、购买、无音频…）而平台还有别的版本时，先问一句再报错。
+            if (CASE_MAY_HAVE_REPLACEMENT.has(shown.case)) await presentTakenDown(shown);
+            else presentOnlineFailure(shown);
             return;
         }
 
@@ -939,8 +948,8 @@ export function usePlaybackQueueController({
         void playSong(song, nextQueue, false);
     }, [playQueue, playSong]);
 
-    const handleSearchOverlaySubmit = useCallback(async (requestedSource?: SearchSource) => {
-        const trimmedQuery = searchQuery.trim();
+    const handleSearchOverlaySubmit = useCallback(async (requestedSource?: SearchSource, requestedQuery?: string) => {
+        const trimmedQuery = (requestedQuery ?? searchQuery).trim();
         if (!trimmedQuery) {
             return;
         }

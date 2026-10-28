@@ -23,6 +23,9 @@ import './stores/useMotionSettingsStore';
 // Android 原生 fetch 桥：跨域请求（波点/酷狗旧接口等）经 OkHttp + CookieManager 发出，绕过 CORS
 import { installNativeFetchShim } from './audioNative/fetchShim';
 installNativeFetchShim();
+// 带前缀的 console 行（[YTM]/[KuGou]/[QQ]…）同时转给原生侧，落到外部可读的日志文件里。
+import { installConsoleDiagnosticsBridge } from './audioNative/consoleDiagnostics';
+installConsoleDiagnosticsBridge();
 
 // src/bootstrap.tsx
 // Mounts the React app after index.tsx installs runtime-level browser shims.

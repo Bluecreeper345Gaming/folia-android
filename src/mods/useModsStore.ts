@@ -5,6 +5,7 @@ import {
     getFfmpegStatus,
     getModStorageUsage,
     installModFromZip,
+    installModFromZipFile,
     isModsBridgeAvailable,
     listMods,
     openModsDirectory,
@@ -55,6 +56,8 @@ interface ModsStoreState {
     cancelActiveExport: () => Promise<void>;
     openModsDirectory: () => Promise<{ ok: boolean; directory?: string; error?: string }>;
     installModFromZip: (zipPath: string) => Promise<{ ok: boolean; id?: string; error?: string }>;
+    /** The Android app's picker path: the zip's bytes, unpacked in the window. */
+    installModFromFile: (file: File) => Promise<{ ok: boolean; id?: string; error?: string }>;
     getModStorageUsage: (modId: string) => Promise<ModStorageUsageResult>;
     clearModCache: (modId: string) => Promise<ModClearCacheResult>;
     bindEvents: () => void;
@@ -120,6 +123,14 @@ export const useModsStore = create<ModsStoreState>((set, get) => ({
 
     installModFromZip: async (zipPath) => {
         const result = await installModFromZip(zipPath);
+        if (result.ok) {
+            await get().refresh();
+        }
+        return result;
+    },
+
+    installModFromFile: async (file) => {
+        const result = await installModFromZipFile(file);
         if (result.ok) {
             await get().refresh();
         }

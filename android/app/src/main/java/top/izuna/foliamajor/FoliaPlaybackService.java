@@ -47,6 +47,22 @@ public class FoliaPlaybackService extends Service {
     private final ExecutorService artworkExecutor = Executors.newSingleThreadExecutor();
     private final OkHttpClient artworkClient = new OkHttpClient();
     private final Map<String, Bitmap> artworkCache = new ConcurrentHashMap<>();
+    /**
+     * 封面磁盘缓存目录。
+     *
+     * 内存缓存只在服务活着时有用：服务被系统回收后重启，锁屏那块就只剩一片空白，
+     * 直到网络把图再下一次 —— 而这正好是「锁屏不显示封面」最常见的现场。
+     * 落到 app 私有目录后，重启即有图，离线也有图。
+     */
+    private java.io.File artworkDiskDir;
+    /**
+     * 写进 MediaSession 的封面上限。
+     *
+     * 系统对塞进 metadata 的 Bitmap 有 Binder 事务大小限制（1 MB 左右），
+     * 一张 3000x3000 的封面直接 putBitmap 会让 setMetadata 抛 TransactionTooLarge，
+     * 表现就是「歌词和歌名都对，就是没有封面」。所以先缩到这个边长，再写一次。
+     */
+    private static final int ARTWORK_MAX_EDGE = 1024;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile String currentArtworkUrl = "";
     private volatile String appliedArtworkUrl = "";
@@ -74,6 +90,42 @@ public class FoliaPlaybackService extends Service {
     private volatile long lastServiceStartRecordAt = 0L;
     private volatile boolean lastServiceStartPlaying = false;
     private volatile String lastServiceStartSongKey = "";
+    /**
+     * 通知正文的刷新节拍：只在播放中跑，且只在「当前那一行真的变了」时才 notify。
+     *
+     * 为什么不能靠播放状态推送：歌词行的推进不是一次 state 变化，它每秒都在动，
+     * 而每次推送都会走一遍 startForeground。所以这里自己按秒查一次当前行，
+     * 变了才 notify —— 不变就完全不碰，通知栏不会闪。
+     */
+    private static final long LYRIC_TICK_INTERVAL_MS = 1_000L;
+    private volatile String lastDrawnLyricLine = "";
+    private final Runnable lyricTickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (cachedPlaying && running) {
+                    String line = ColorOsLyricBridge.currentLineFor(cachedSongKey, cachedPositionMs);
+                    String next = line == null ? "" : line;
+                    if (!next.equals(lastDrawnLyricLine)) {
+                        lastDrawnLyricLine = next;
+                        NotificationManager manager = getSystemService(NotificationManager.class);
+                        if (manager != null) {
+                            // notify=false 的语义这里用不上：这是整条通知的重建，
+                            // 但 setOnlyAlertOnce 保证它不会响铃也不会弹横幅。
+                            manager.notify(
+                                NOTIFICATION_ID,
+                                buildNotification(cachedTitle, cachedArtist, cachedPlaying, appliedArtworkBitmap)
+                            );
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+                // 刷新失败什么也不做：下一拍再来。
+            }
+            mainHandler.postDelayed(this, LYRIC_TICK_INTERVAL_MS);
+        }
+    };
+
     private final Runnable serviceHeartbeatRunnable = new Runnable() {
         @Override
         public void run() {
@@ -86,7 +138,11 @@ public class FoliaPlaybackService extends Service {
     public void onCreate() {
         super.onCreate();
         running = true;
+        // 封面磁盘缓存目录：app 私有目录下，不用权限，也不会被当媒体扫描。
+        artworkDiskDir = new java.io.File(getCacheDir(), "playback-artwork");
         createNotificationChannel();
+        // 通知栏歌词的节拍：每秒查一次当前行，变了才重画通知。
+        mainHandler.postDelayed(lyricTickRunnable, LYRIC_TICK_INTERVAL_MS);
         mediaSession = new MediaSession(this, "FoliaPlayback");
             // 「歌曲永不让位」策略：本服务主动持有音频焦点（AUDIOFOCUS_GAIN），
     // 且焦点变化监听器是 no-op —— 游戏/其他 App 抢焦点时本 App 绝不自动暂停。
@@ -328,10 +384,18 @@ mediaSession.setCallback(new MediaSession.Callback() {
             new Intent(this, PlaybackActionReceiver.class).setAction("next"),
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
+        // 通知正文优先放当前那一行歌词，没有歌词才退回歌手名：
+        // 这正是「通知栏歌词」的落点 —— 系统和厂商岛可能另读 metadata，
+        // 但通知本身得先有一个显示词的地方。
+        String lyricLine = ColorOsLyricBridge.currentLineFor(cachedSongKey, cachedPositionMs);
+        String contentText = artist == null ? "" : artist;
+        if (lyricLine != null && !lyricLine.trim().isEmpty()) {
+            contentText = lyricLine;
+        }
         Notification.Builder builder = new Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(title == null ? "Folia" : title)
-            .setContentText(artist == null ? "" : artist)
+            .setContentText(contentText)
             .setContentIntent(contentIntent)
             .setOnlyAlertOnce(true)
             .setOngoing(playing)
@@ -344,6 +408,60 @@ mediaSession.setCallback(new MediaSession.Callback() {
                 .setShowActionsInCompactView(0, 1, 2));
         if (artwork != null) builder.setLargeIcon(artwork);
         return builder.build();
+    }
+
+    /** 封面在磁盘上的文件：URL 的 hash 做名，换 URL 就是换文件。 */
+    private java.io.File artworkFileFor(String url) {
+        if (artworkDiskDir == null) return null;
+        String name = Integer.toHexString(url.hashCode()) + "-" + url.length() + ".img";
+        return new java.io.File(artworkDiskDir, name);
+    }
+
+    /** 读磁盘缓存；读到就解成 Bitmap，坏文件顺手删掉。 */
+    private Bitmap readArtworkFromDisk(String url) {
+        java.io.File file = artworkFileFor(url);
+        if (file == null || !file.isFile() || file.length() == 0) return null;
+        try (java.io.InputStream input = new java.io.FileInputStream(file)) {
+            Bitmap bitmap = BitmapFactory.decodeStream(input);
+            if (bitmap == null) {
+                //noinspection ResultOfMethodCallIgnored
+                file.delete();
+                return null;
+            }
+            return scaleArtwork(bitmap);
+        } catch (Throwable error) {
+            return null;
+        }
+    }
+
+    private void writeArtworkToDisk(String url, Bitmap bitmap) {
+        java.io.File file = artworkFileFor(url);
+        if (file == null || bitmap == null) return;
+        try {
+            if (!artworkDiskDir.isDirectory() && !artworkDiskDir.mkdirs()) return;
+            try (java.io.OutputStream output = new java.io.FileOutputStream(file)) {
+                // PNG 而不是 JPEG：JPEG 丢掉 alpha，某些封面图（圆角/透明）会黑一块。
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+            }
+        } catch (Throwable ignored) {
+            // 磁盘写失败不影响本次显示，下次再来。
+        }
+    }
+
+    /**
+     * 把封面缩到 ARTWORK_MAX_EDGE 以内：Binder 事务装不下大图，
+     * 系统那边只会当作「没有封面」。等比缩放，小图不动。
+     */
+    private Bitmap scaleArtwork(Bitmap bitmap) {
+        if (bitmap == null) return null;
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int longest = Math.max(width, height);
+        if (longest <= ARTWORK_MAX_EDGE) return bitmap;
+        float ratio = (float) ARTWORK_MAX_EDGE / (float) longest;
+        int targetWidth = Math.max(1, Math.round(width * ratio));
+        int targetHeight = Math.max(1, Math.round(height * ratio));
+        return Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true);
     }
 
     private void loadArtwork(String value, ArtworkCallback callback) {
@@ -362,6 +480,24 @@ mediaSession.setCallback(new MediaSession.Callback() {
                     );
                 }
                 callback.onLoaded(cached);
+            });
+            return;
+        }
+        // 内存里没有就查磁盘：服务刚重启、或者网络还没通的时候，图就来自这里。
+        Bitmap fromDisk = readArtworkFromDisk(value);
+        if (fromDisk != null) {
+            artworkCache.put(value, fromDisk);
+            mainHandler.post(() -> {
+                if (value.equals(currentArtworkUrl)) {
+                    appliedArtworkUrl = value;
+                    appliedArtworkBitmap = fromDisk;
+                    FoliaCorePlugin.notePlaybackArtwork(
+                        value,
+                        "loaded",
+                        "disk " + fromDisk.getWidth() + "x" + fromDisk.getHeight()
+                    );
+                }
+                callback.onLoaded(fromDisk);
             });
             return;
         }
@@ -388,7 +524,11 @@ mediaSession.setCallback(new MediaSession.Callback() {
             } catch (Exception error) {
                 failure = error.getClass().getSimpleName();
             }
-            if (bitmap != null) artworkCache.put(value, bitmap);
+            if (bitmap != null) {
+                bitmap = scaleArtwork(bitmap);
+                artworkCache.put(value, bitmap);
+                writeArtworkToDisk(value, bitmap);
+            }
             Bitmap resolved = bitmap;
             if (resolved != null) {
                 mainHandler.post(() -> {
@@ -506,6 +646,7 @@ mediaSession.setCallback(new MediaSession.Callback() {
         recordServiceLifecycle("service-destroy", "Foreground playback service destroyed");
         running = false;
         mainHandler.removeCallbacks(serviceHeartbeatRunnable);
+        mainHandler.removeCallbacks(lyricTickRunnable);
         updatePlaybackLocks(false);
         artworkExecutor.shutdownNow();
         if (mediaSession != null) {

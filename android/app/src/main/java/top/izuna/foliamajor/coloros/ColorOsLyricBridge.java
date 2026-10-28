@@ -40,6 +40,14 @@ public final class ColorOsLyricBridge {
     /** SystemUI 与 Bridge 认的 metadata 键。 */
     public static final String METADATA_KEY_LYRIC_INFO = "lyricInfo";
 
+    /**
+     * 官方歌词键：`android.media.metadata.LYRIC`。
+     *
+     * 直接写字符串而不是引常量 —— android.media.MediaMetadata 并没有导出这个常量，
+     * 但 support-v4 的 MediaMetadataCompat 与各家 ROM 都是按这个名字读的。
+     */
+    public static final String METADATA_KEY_LYRIC = "android.media.metadata.LYRIC";
+
     /** Bridge 的公共「翻译」按钮。只在真的有翻译时才挂到 PlaybackState 上。 */
     public static final String ACTION_TOGGLE_TRANSLATION =
             "io.github.andrealtb.lockscreenlyrics.action.TOGGLE_TRANSLATION";
@@ -310,6 +318,73 @@ public final class ColorOsLyricBridge {
         return null;
     }
 
+    /**
+     * 当前这一行歌词的纯文本，给通知栏正文用。
+     *
+     * 通知栏那行 `setContentText` 平时是歌手名；厂商的「状态栏歌词」和很多系统的
+     * 媒体卡片会优先读 metadata 而不是正文，但原生通知本身仍需要一个能显示词的落点。
+     * 这里返回当前应显示的那一行（按 positionMs 在时间轴里查找）。
+     */
+    public static String currentLineFor(String songKey, long positionMs) {
+        Payload current = pending;
+        if (current == null || current.json == null) {
+            return null;
+        }
+        if (songKey != null && current.songKey != null && !songKey.equals(current.songKey)) {
+            return null;
+        }
+        try {
+            org.json.JSONObject root = new org.json.JSONObject(current.json);
+            // 协议里的 `lyric` 是 LRC 文本，不是数组：一行一条 `[mm:ss.mmm]文本`。
+            String lrc = root.optString("lyric", "");
+            if (lrc.isEmpty()) {
+                return null;
+            }
+            String found = null;
+            int cursor = 0;
+            while (cursor < lrc.length()) {
+                int nextBreak = lrc.indexOf('\n', cursor);
+                if (nextBreak < 0) {
+                    nextBreak = lrc.length();
+                }
+                String row = lrc.substring(cursor, nextBreak).trim();
+                cursor = nextBreak + 1;
+                if (row.isEmpty() || row.charAt(0) != '[') {
+                    continue;
+                }
+                int close = row.indexOf(']');
+                if (close <= 1) {
+                    continue;
+                }
+                long at = parseLrcTime(row.substring(1, close));
+                if (at < 0 || at > positionMs) {
+                    continue;
+                }
+                // 过了头的行先记下：两行之间有空隙时显示刚过去那一行，
+                // 比空着更接近播放器的观感。
+                found = row.substring(close + 1);
+            }
+            return found;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** `mm:ss.mmm` → 毫秒；认不出返回 -1。 */
+    private static long parseLrcTime(String text) {
+        try {
+            int colon = text.indexOf(':');
+            if (colon <= 0) {
+                return -1L;
+            }
+            long minutes = Long.parseLong(text.substring(0, colon).trim());
+            double seconds = Double.parseDouble(text.substring(colon + 1).trim());
+            return (long) Math.round(minutes * 60_000.0 + seconds * 1000.0);
+        } catch (Throwable ignored) {
+            return -1L;
+        }
+    }
+
     /** 有没有翻译 lane —— 决定要不要挂 Bridge 的公共翻译按钮。 */
     public static boolean hasTranslationFor(String songKey) {
         Payload current = pending;
@@ -332,6 +407,11 @@ public final class ColorOsLyricBridge {
         String json = lyricInfoFor(songKey);
         if (json != null) {
             builder.putString(METADATA_KEY_LYRIC_INFO, json);
+            // 官方字段 android.media.metadata.LYRIC：SDK 里没有对应的 Java 常量
+            // （MediaMetadata 只有 TITLE/ARTIST 这一组），但它是 MediaMetadataCompat
+            // 认的原始键名，按字面量写就行。华为/荣耀那套「读卡不画岛」读的就是它
+            // （见逆向分析文档第三节 A、B）；与私有键并存，认哪个的厂商都能拿到词。
+            builder.putString(METADATA_KEY_LYRIC, json);
         }
     }
 

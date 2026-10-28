@@ -12,9 +12,11 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Arrays;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -48,6 +50,11 @@ final class LocalAudioServer {
     private static final String TAG = "LocalAudioServer";
     private static final String AUDIO_PATH_PREFIX = "/audio/";
     private static final String REMOTE_AUDIO_PATH_PREFIX = "/remote-audio/";
+    /** 原生整段下载的音频（YouTube Music 等按出口 IP 签发的直链走这条）。 */
+    private static final String DOWNLOADED_AUDIO_PATH_PREFIX = "/downloaded-audio/";
+    private static final String DOWNLOADED_AUDIO_DIR = "downloaded-audio";
+    /** 一首歌下到这么大还没完就不要了（无损也就几十 MB，这个上限只防跑飞）。 */
+    private static final long DOWNLOADED_AUDIO_MAX_BYTES = 96L * 1024 * 1024;
     private static final String IMPORTED_PREFIX = "imported-";
     /** 直接按绝对路径流原文件的 ref 前缀（文件系统兜底扫描出来的歌，不复制进私有目录）。 */
     private static final String FILE_PREFIX = "file-";
@@ -73,6 +80,9 @@ final class LocalAudioServer {
     private final Map<String, String> remoteAudioUrls = new LinkedHashMap<>();
     /** 转发时要额外带上的请求头（按 token 存）；没有时为 null，见 {@link #registerRemoteAudio}。 */
     private final Map<String, Map<String, String>> remoteAudioHeaders = new LinkedHashMap<>();
+    /** 下载好的音频：token → 磁盘上的文件（token 由地址算出来，重启后同名文件仍可复用）。 */
+    private final Map<String, File> downloadedAudioFiles = new LinkedHashMap<>();
+    private final Map<String, String> downloadedAudioTypes = new LinkedHashMap<>();
     private ServerSocket serverSocket;
     private int port;
 
@@ -150,6 +160,231 @@ final class LocalAudioServer {
         return "http://127.0.0.1:" + localPort + REMOTE_AUDIO_PATH_PREFIX + token;
     }
 
+    /**
+     * 把一整首远端音频先下到本地，再返回 `http://127.0.0.1:<port>/downloaded-audio/<token>`。
+     *
+     * 为什么不像 {@link #registerRemoteAudio} 那样边收边转：YouTube 的音频直链是按**取地址那一刻的
+     * 出口 IP** 签发的（sparams 里的 ip 参数），而代理每开一条连接都可能换节点。分片去取时，
+     * 第一片往往命中 CDN 缓存能拿到，从第二片起就是 403 —— 手机版此前的"点歌没声音"正是这个。
+     * 这里用**一条连接**把整首拉回磁盘，再从本地服务按 Range 喂给 <audio>：
+     *   - 下载全程一条连接，出口 IP 不会中途换掉；
+     *   - 下载完成后本地文件可随机读，拖进度条、跳播都不用再碰网络；
+     *   - 本地服务照样回 CORS 头，WebView 的 crossOrigin 检查过得去。
+     */
+    synchronized String registerDownloadedAudio(String value, Map<String, String> headers) throws IOException {
+        URL url = new URL(value);
+        if (!("http".equals(url.getProtocol()) || "https".equals(url.getProtocol()))) {
+            throw new IOException("Unsupported audio url");
+        }
+        int localPort = start();
+        String token = downloadedAudioToken(value);
+        File directory = downloadedAudioDirectory();
+        File target = new File(directory, token + ".m4a");
+        if (!target.isFile() || target.length() <= 0) {
+            downloadAudio(value, headers, target, token);
+        } else {
+            Log.i(TAG, "downloaded audio reused: " + token + " (" + target.length() + " bytes)");
+        }
+        String contentType = downloadedAudioTypes.get(token);
+        if (contentType == null || contentType.isEmpty()) contentType = guessMimeType(target.getName());
+        synchronized (downloadedAudioFiles) {
+            downloadedAudioFiles.remove(token);
+            downloadedAudioFiles.put(token, target);
+            downloadedAudioTypes.put(token, contentType);
+        }
+        pruneDownloadedAudio(directory, target);
+        return "http://127.0.0.1:" + localPort + DOWNLOADED_AUDIO_PATH_PREFIX + token;
+    }
+
+    private File downloadedAudioDirectory() {
+        File dir = new File(context.getCacheDir(), DOWNLOADED_AUDIO_DIR);
+        if (!dir.exists()) dir.mkdirs();
+        return dir;
+    }
+
+    /** 地址的 SHA-1：同一首歌在不同次解析里地址会变（带 expire/sig），同一个地址只下一次。 */
+    private static String downloadedAudioToken(String value) throws IOException {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-1");
+            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(bytes.length * 2);
+            for (byte item : bytes) hex.append(String.format(Locale.ROOT, "%02x", item));
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException error) {
+            throw new IOException("SHA-1 unavailable", error);
+        }
+    }
+
+    private void downloadAudio(String value, Map<String, String> headers, File target, String token) throws IOException {
+        Request.Builder request = new Request.Builder().url(value);
+        request.header("User-Agent", REMOTE_AUDIO_USER_AGENT);
+        if (headers != null) {
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                if (entry.getKey() == null || entry.getValue() == null) continue;
+                request.header(entry.getKey(), entry.getValue());
+            }
+        }
+        Request built = request.build();
+        if (built.header("Range") == null) request.header("Range", "bytes=0-");
+        built = request.build();
+
+        File part = new File(target.getPath() + ".part");
+        IOException lastError = null;
+        // 同一地址重试几次：CDN 偶发 403/5xx 时有用（出口 IP 换了的情况要靠调用方重新取地址）。
+        for (int attempt = 1; attempt <= 3; attempt += 1) {
+            Response response = null;
+            try {
+                response = remoteAudioClient.newCall(built).execute();
+                ResponseBody body = response.body();
+                if (!response.isSuccessful() || body == null) {
+                    lastError = new IOException("audio download failed: HTTP " + response.code());
+                    Log.w(TAG, "downloaded audio attempt " + attempt + " -> HTTP " + response.code() + " for " + token);
+                    if (attempt < 3) sleepQuietly(300 * attempt);
+                    continue;
+                }
+                String contentType = body.contentType() == null ? "" : body.contentType().toString();
+                if (contentType.contains("text/html")) {
+                    lastError = new IOException("audio download returned html");
+                    if (attempt < 3) sleepQuietly(300 * attempt);
+                    continue;
+                }
+                long total = 0;
+                try (InputStream input = body.byteStream();
+                     OutputStream output = new BufferedOutputStream(new FileOutputStream(part))) {
+                    byte[] buffer = new byte[64 * 1024];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, read);
+                        total += read;
+                        if (total > DOWNLOADED_AUDIO_MAX_BYTES) {
+                            throw new IOException("audio too large: " + total + " bytes");
+                        }
+                    }
+                }
+                if (total <= 0) {
+                    lastError = new IOException("audio download is empty");
+                    if (attempt < 3) sleepQuietly(300 * attempt);
+                    continue;
+                }
+                if (!part.renameTo(target)) throw new IOException("cannot store audio at " + target);
+                synchronized (downloadedAudioFiles) {
+                    downloadedAudioTypes.put(token, contentType.isEmpty() ? guessMimeType(target.getName()) : contentType);
+                }
+                Log.i(TAG, "downloaded audio " + token + " " + total + " bytes type=" + contentType);
+                return;
+            } catch (IOException error) {
+                lastError = error;
+                Log.w(TAG, "downloaded audio attempt " + attempt + " failed: " + error.getMessage());
+                if (attempt < 3) sleepQuietly(300 * attempt);
+            } finally {
+                if (response != null) response.close();
+            }
+        }
+        // 没下成就把半截文件丢掉，免得下次被当成"已经有缓存"。
+        if (part.isFile() && !part.delete()) Log.w(TAG, "cannot delete partial download " + part);
+        IOException cause = lastError == null ? new IOException("audio download failed") : lastError;
+        // 403 的成因值得说清楚：直链是按"取地址那一刻的出口 IP"签发的。
+        // 这里问一次 googlevideo 自己看到的出口 IP，和直链里的 ip 对一对，一眼能看出是不是代理分流的锅。
+        String signedIp = "";
+        try {
+            signedIp = android.net.Uri.parse(value).getQueryParameter("ip");
+        } catch (Exception ignored) {
+            signedIp = "";
+        }
+        String egress = googlevideoEgressIp();
+        String detail = "音频直链取不到字节（" + cause.getMessage() + "）";
+        if (signedIp != null && !signedIp.isEmpty()) detail += "；直链签给 " + signedIp;
+        if (!egress.isEmpty()) detail += "；googlevideo 出口 " + egress;
+        if (signedIp != null && !signedIp.isEmpty() && !egress.isEmpty() && !signedIp.equals(egress)) {
+            detail += " —— 两个出口不一致，代理把 youtube.com 与 googlevideo.com 走了不同节点";
+        } else if (!egress.isEmpty()) {
+            detail += " —— 出口一致仍被拒，属于 googlevideo 侧的限流/风控";
+        }
+        Log.w(TAG, detail);
+        throw new IOException(detail, cause);
+    }
+
+    /** googlevideo 看到的我们的出口 IP（redirector 的 report_mapping 会把它写回来）。 */
+    private String googlevideoEgressIp() {
+        try {
+            Request request = new Request.Builder()
+                .url("https://redirector.googlevideo.com/report_mapping?di=no")
+                .header("User-Agent", REMOTE_AUDIO_USER_AGENT)
+                .build();
+            Response response = remoteAudioClient.newCall(request).execute();
+            try {
+                ResponseBody body = response.body();
+                if (body == null) return "";
+                String text = body.string().trim();
+                // 形如 "31.59.132.159 => nearoute-hkg1 (31.59.132.0/23)"
+                int space = text.indexOf(' ');
+                return space > 0 ? text.substring(0, space) : text;
+            } finally {
+                response.close();
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "googlevideo egress probe failed: " + error.getMessage());
+            return "";
+        }
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** 缓存别无限长：超过一天的文件先清掉，仍然多于 60 个就按最旧的删。 */
+    private void pruneDownloadedAudio(File directory, File keep) {
+        File[] files = directory.listFiles();
+        if (files == null) return;
+        long now = System.currentTimeMillis();
+        for (File file : files) {
+            if (file.equals(keep)) continue;
+            if (now - file.lastModified() > 24L * 60 * 60 * 1000) {
+                if (!file.delete()) Log.w(TAG, "cannot prune " + file);
+            }
+        }
+        files = directory.listFiles();
+        if (files != null && files.length > 60) {
+            java.util.Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+            for (int index = 0; index < files.length - 60; index += 1) {
+                if (!files[index].equals(keep) && !files[index].delete()) Log.w(TAG, "cannot prune " + files[index]);
+            }
+        }
+    }
+
+    private void streamDownloadedAudio(
+        BufferedOutputStream output,
+        String[] requestParts,
+        Map<String, String> headers,
+        String token
+    ) throws IOException {
+        File target;
+        synchronized (downloadedAudioFiles) {
+            target = downloadedAudioFiles.get(token);
+        }
+        if (target == null) {
+            // 进程重启过：token 是按地址算的，磁盘上的同名文件仍然可用。
+            File cached = new File(downloadedAudioDirectory(), token + ".m4a");
+            if (cached.isFile() && cached.length() > 0) target = cached;
+        }
+        if (target == null || !target.isFile()) {
+            Log.w(TAG, "downloaded audio unknown: " + token);
+            writeStatus(output, 404, "Not Found");
+            return;
+        }
+        String contentType;
+        synchronized (downloadedAudioFiles) {
+            contentType = downloadedAudioTypes.get(token);
+        }
+        if (contentType == null || contentType.isEmpty()) contentType = guessMimeType(target.getName());
+        final File file = target;
+        writeResponse(output, requestParts, headers, file.length(), contentType, () -> new FileInputStream(file));
+    }
+
     /** 有些 CDN 看 Referer 决定给不给资源：不带时回的是一段 HTML 而不是音频。 */
     private static String remoteAudioReferer(String value) {
         try {
@@ -220,6 +455,10 @@ final class LocalAudioServer {
                     + "Content-Length: 0\r\nConnection: close\r\n\r\n";
                 output.write(response.getBytes(StandardCharsets.US_ASCII));
                 output.flush();
+                return;
+            }
+            if (path.startsWith(DOWNLOADED_AUDIO_PATH_PREFIX)) {
+                streamDownloadedAudio(output, requestParts, headers, path.substring(DOWNLOADED_AUDIO_PATH_PREFIX.length()));
                 return;
             }
             if (path.startsWith(REMOTE_AUDIO_PATH_PREFIX)) {

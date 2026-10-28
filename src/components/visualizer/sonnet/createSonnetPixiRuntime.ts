@@ -36,6 +36,18 @@ import {
 // 段落场景缓存、换歌溶解和每帧调度。
 type PixiModule = typeof import('pixi.js');
 
+// Android（Capacitor）：平板高分屏上 PIXI 全分辨率渲染是 Lattice 掉帧主因 —— 分辨率钳到 1.0。
+// 放在模块层：创建与每次 resize 都要用，先前写在 create() 里、resizeToHost() 读不到而抛
+// ReferenceError，商籁因此没有画布。
+const isAndroidNativeApp = (): boolean => (
+    typeof window !== 'undefined' && Boolean((window as any).Capacitor?.isNativePlatform?.())
+);
+
+const sonnetPixiResolution = (width: number, height: number, textureResolution: number): number => {
+    const wanted = snapResolutionToTexturePool(width, height, textureResolution);
+    return isAndroidNativeApp() ? Math.min(wanted, 1) : wanted;
+};
+
 export interface SonnetSongMetadata {
     title?: string | null;
     artist?: string | null;
@@ -152,12 +164,6 @@ export class SonnetPixiRuntime {
             powerPreference: 'high-performance',
         } as const;
         const context = await makePixiContext(pixi, contextOptions, options.signal);
-        // Android（Capacitor）：平板高分屏上 PIXI 全分辨率渲染是 Lattice 掉帧主因 —— 钳到 1.0
-        const isAndroidApp = typeof window !== 'undefined' && !!(window as any).Capacitor?.isNativePlatform;
-        const pixiResolution = (w: number, h: number) => {
-            const wanted = snapResolutionToTexturePool(w, h, options.tuning.textureResolution);
-            return isAndroidApp ? Math.min(wanted, 1) : wanted;
-        };
         const app = new pixi.Application();
         const width = Math.max(options.host.clientWidth, 320);
         const height = Math.max(options.host.clientHeight, 240);
@@ -167,7 +173,7 @@ export class SonnetPixiRuntime {
             ...contextOptions,
             ...context,
             autoDensity: true,
-            resolution: snapResolutionToTexturePool(width, height, options.tuning.textureResolution),
+            resolution: sonnetPixiResolution(width, height, options.tuning.textureResolution),
             autoStart: false,
             sharedTicker: false,
             preference: 'webgl',
@@ -233,7 +239,7 @@ export class SonnetPixiRuntime {
         this.app.renderer.resize(
             width,
             height,
-            pixiResolution(width, height),
+            sonnetPixiResolution(width, height, this.options.tuning.textureResolution),
         );
         // Staged against the old viewport, so its layout no longer fits.
         if (this.songSwap?.staged) {

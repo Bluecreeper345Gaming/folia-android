@@ -88,6 +88,8 @@ type PlaybackStoreState = {
     setCurrentLineIndex: SetState<number>;
     setHandoffLineIndex: SetState<number>;
     setPlayQueue: SetState<SongResult[]>;
+    /** Puts a whole new queue in and sets Personal FM in the same update, so a subscriber sees both at once. */
+    replacePlayQueue: (queue: SongResult[], isFmMode: boolean) => void;
     setActivePlaybackContext: SetState<PlaybackContext>;
     setIsFmMode: SetState<boolean>;
     setReplayGainMode: SetState<ReplayGainMode>;
@@ -140,6 +142,7 @@ export const usePlaybackStore = create<PlaybackStoreState>((set, get) => ({
     setCurrentLineIndex: (next) => set({ currentLineIndex: resolve(next, get().currentLineIndex) }),
     setHandoffLineIndex: (next) => set({ handoffLineIndex: resolve(next, get().handoffLineIndex) }),
     setPlayQueue: (next) => set({ playQueue: resolve(next, get().playQueue) }),
+    replacePlayQueue: (queue, isFmMode) => set({ playQueue: queue, isFmMode }),
     setActivePlaybackContext: (next) => set({ activePlaybackContext: resolve(next, get().activePlaybackContext) }),
     setIsFmMode: (next) => set({ isFmMode: resolve(next, get().isFmMode) }),
     setReplayGainMode: (next) => set({ replayGainMode: resolve(next, get().replayGainMode) }),
@@ -166,6 +169,7 @@ export const endLoadingToPlay = () => usePlaybackStore.getState().endLoadingToPl
 export const setCurrentLineIndex: SetState<number> = (next) => usePlaybackStore.getState().setCurrentLineIndex(next);
 export const setHandoffLineIndex: SetState<number> = (next) => usePlaybackStore.getState().setHandoffLineIndex(next);
 export const setPlayQueue: SetState<SongResult[]> = (next) => usePlaybackStore.getState().setPlayQueue(next);
+export const replacePlayQueue = (queue: SongResult[], isFmMode: boolean) => usePlaybackStore.getState().replacePlayQueue(queue, isFmMode);
 export const setActivePlaybackContext: SetState<PlaybackContext> = (next) => usePlaybackStore.getState().setActivePlaybackContext(next);
 export const setIsFmMode: SetState<boolean> = (next) => usePlaybackStore.getState().setIsFmMode(next);
 export const setReplayGainMode: SetState<ReplayGainMode> = (next) => usePlaybackStore.getState().setReplayGainMode(next);

@@ -1,4 +1,4 @@
-import { AudioWaveform, Compass, LogIn, Music2, QrCode, Sparkles } from 'lucide-react';
+import { Flame, Radio, Shuffle, Sparkles } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 // src/components/modal/newFeaturesRelease.ts
@@ -16,15 +16,21 @@ type NewFeaturesRelease = {
 };
 
 // Defines the current release's cards; their localized text lives under i18nKey in every locale.
+// 桌面专属的两项（全局快捷键、AI 服务商与模型）不在手机端展示。
 export const NEW_FEATURES_RELEASE: NewFeaturesRelease = {
-    i18nKey: 'releaseNotes.v0_7_21',
-    majorUpdate: { codename: 'Sabbat-of-the-witch' },
+    i18nKey: 'releaseNotes.v0_7_22',
+    majorUpdate: { codename: 'Sparkle' },
     features: [
-        { id: 'newPlatforms', icon: Music2 },
-        { id: 'loginWindow', icon: LogIn },
-        { id: 'explore', icon: Compass },
-        { id: 'smartBeat', icon: AudioWaveform },
-        { id: 'qqMusic', icon: QrCode },
+        { id: 'qishui', icon: Radio },
+        { id: 'hanabi', icon: Flame },
+        { id: 'randomStyles', icon: Shuffle },
         { id: 'moreDetails', icon: Sparkles },
     ],
 };
+
+/** 这组更新说明对应的上游版本号（`releaseNotes.v0_7_22` → `0.7.22`），给版本更新弹窗的副标题用。 */
+export const RELEASE_NOTES_VERSION = NEW_FEATURES_RELEASE.i18nKey
+    .split('.')
+    .pop()
+    ?.replace(/^v/, '')
+    .replace(/_/g, '.') ?? null;

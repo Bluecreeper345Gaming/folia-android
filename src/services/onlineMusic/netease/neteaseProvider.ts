@@ -17,7 +17,7 @@ import { parseNeteaseChorusRanges, processNeteaseLyrics } from '../../../utils/l
 import { getPlaybackSourceRef } from '../../../utils/appPlaybackGuards';
 import { toFiniteNumber } from '../../../utils/replayGain';
 import { createProviderSongMetadata } from '../../../utils/songMetadata';
-import { NeteaseLoginHttpError, getNeteaseRemoteApiBase, neteaseApi, resolveNeteaseSongAvailability } from './netease';
+import { NeteaseLoginHttpError, getNeteaseRemoteApiBase, httpErrorStatusOf, neteaseApi, resolveNeteaseSongAvailability } from './netease';
 import i18n from '../../../i18n/config';
 import { removeProviderSessionValue, writeProviderSessionValue } from '../providerStorage';
 import { readNeteaseOldAccountCache, removeNeteaseOldAccountCache } from './neteaseOldAccountCache';
@@ -148,6 +148,17 @@ const yesNo = (value: boolean): string => (value ? 'yes' : 'no');
 let lastLoginStatusCheck: LoginDiagnosticLine | null = null;
 const noteLoginStatusCheck = (summary: LoginDiagnosticLine): void => {
     lastLoginStatusCheck = diagnosticLine`${formatDiagnosticClock(Date.now())} ${summary}`;
+};
+
+// 只有网易云明说的才算：回答的码是 301、401、403（没有登录），或是 200（有没有人看回答里的用户）。别的回答都是这一次
+// 没问到谁登录着：本地后端连不上网易云时的 502、网易云的 5xx、风控的 -462，还有没有码的 HTTP 错误（比如远程 API 前面
+// 网关自己的回答）。这时抛 'unavailable' 的错（neteaseAnswerError）：accountRead.ts 只把这次读记为失败，cookie 留着。
+// 当成没有人登录，会删掉一个还有效的登录。
+const throwIfLoginCheckRefused = (response: any, route: string): void => {
+    const code = Number(response?.code ?? response?.data?.code);
+    if ([301, 401, 403].includes(code) || (code === 200 && httpErrorStatusOf(response) === undefined)) return;
+    noteLoginStatusCheck(diagnosticLine`${route} code=${code} refused`);
+    throw neteaseAnswerError(response, route);
 };
 
 const extractCloudLyricText = (response: any): string => (
@@ -399,6 +410,7 @@ export const neteaseProvider: OnlineMusicProvider = {
         localService: neteaseLocalService,
         async getLoginStatus() {
             const loginResponse = await neteaseApi.getLoginStatus();
+            throwIfLoginCheckRefused(loginResponse, 'login/status');
             const loginProfile = loginResponse?.data?.profile;
             const loginCode = Number(loginResponse?.code ?? loginResponse?.data?.code);
             if (!loginProfile || [301, 401, 403].includes(loginCode)) {
@@ -407,6 +419,7 @@ export const neteaseProvider: OnlineMusicProvider = {
             }
 
             const accountResponse = await neteaseApi.getUserAccount();
+            throwIfLoginCheckRefused(accountResponse, 'user/account');
             const accountCode = Number(accountResponse?.code ?? accountResponse?.data?.code);
             const accountProfile = accountResponse?.profile;
             const accountId = accountResponse?.account?.id ?? accountProfile?.userId;

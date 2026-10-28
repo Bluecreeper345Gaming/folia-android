@@ -120,9 +120,8 @@ export const MIN_DRAWN_SECONDS = 5;
  * Whether a cue is one to draw. Asked by both animations, so they can never disagree about it.
  *
  * Two of the four parts belong to the caller: `switchedOn` is its setting, `renderer` is which of
- * the two drawings it is. The other two are properties of the transition itself - a plain fade is
- * not a mix and nothing on screen should say it is, and a blend too short to watch is a flash
- * rather than a picture.
+ * the two drawings it is. The other two are properties of the transition itself - see
+ * `whyCueNotDrawn`.
  *
  * `renderer` is what holds the two switches apart. A settings preview goes out on the same channel
  * as every real handover, so without a name on it the drawing that was already switched on replays
@@ -136,10 +135,20 @@ export const shouldDrawCue = (
     renderer: TransitionRenderer,
 ): boolean => (
     switchedOn
-    && !cue.plain
-    && cue.seconds >= MIN_DRAWN_SECONDS
+    && whyCueNotDrawn(cue) === null
     && (!cue.preview || cue.preview === renderer)
 );
+
+/**
+ * Why neither animation draws this transition, from the transition alone - or null when it is one to
+ * draw. The two parts of `shouldDrawCue` that are properties of the transition, in words, so the log
+ * can say it: a refusal that prints nothing looks like the animations being broken.
+ */
+export const whyCueNotDrawn = (cue: TransitionCue): string | null => {
+    if (cue.plain) return 'a plain fade, not a mix';
+    if (!(cue.seconds >= MIN_DRAWN_SECONDS)) return `${cue.seconds.toFixed(2)}s, under the ${MIN_DRAWN_SECONDS}s worth drawing`;
+    return null;
+};
 
 export const subscribeToTransitionCue = (listener: TransitionCueListener): (() => void) => {
     listeners.add(listener);

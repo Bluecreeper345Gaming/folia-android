@@ -15,6 +15,8 @@ export interface FoliaBridgeRequestOptions {
   binary?: boolean;
   /** 手动跟随重定向，每一跳的 Set-Cookie 都写入 CookieManager（浏览器级行为） */
   followRedirects?: boolean;
+  /** true 时不附加 CookieManager 的会话 Cookie，也不写入响应的 Set-Cookie（如汽水：凭据全在请求头里） */
+  omitCookies?: boolean;
 }
 
 export interface FoliaBridgeResponse {

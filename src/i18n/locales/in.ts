@@ -382,6 +382,7 @@ export default {
     "songUnavailable": "Lagu telah dihapus",
     "songUnavailableAlternativeTitle": "Versi alternatif tersedia",
     "songUnavailableAlternativeDescription": "\"{{song}}\" tidak tersedia. {{typeDesc}}. Mainkan versi alternatif?",
+    "songUnplayableAlternativeDescription": "\"{{song}}\" tidak dapat diputar di akun ini ({{typeDesc}}). Mainkan lagu itu sebagai gantinya?",
     "songUnavailableAlternativeDefaultType": "Versi lain bisa diputar",
     "playAlternativeVersion": "Putar versi alternatif",
     "skipUnavailableAction": "Lewati",
@@ -1140,6 +1141,7 @@ export default {
     "directoryOpened": "Folder mod dibuka di pengelola file",
     "dropZipHint": "Seret berkas .zip mod ke sini untuk memasangnya",
     "installing": "Memasang mod…",
+    "installZip": "Pasang mod (.zip)",
     "installSuccess": "Mod terpasang: {{id}} (bisa dinonaktifkan atau diperbarui dari daftar)",
     "storageData": "Data {{size}}",
     "storageCache": "Cache {{size}}",
@@ -1151,6 +1153,9 @@ export default {
     "errors": {
       "no-electron-bridge": "Sistem mod tidak tersedia di lingkungan ini",
       "open-directory-failed": "Gagal membuka folder mod: {{value}}",
+      "android-mod-folder": "Tidak ada pengelola berkas untuk membuka folder di sini: taruh folder mod di Android/data/ti.folia.ming/files/mods (atau folder mods privat aplikasi), lalu segarkan daftar ini.",
+      "android-install-unsupported": "Memasang zip belum didukung di sini: ekstrak zip-nya, taruh folder mod di mods, lalu segarkan.",
+      "install-write-failed": "Gagal menulis berkas mod; periksa ruang penyimpanan ponsel lalu coba lagi.",
       "install-no-path": "Tidak dapat membaca lokasi berkas yang diseret",
       "install-not-zip": "Paket harus berupa berkas .zip",
       "install-corrupt-zip": "Gagal membuka zip; berkas mungkin rusak",
@@ -1233,7 +1238,10 @@ export default {
     "playTrack": "Putar trek",
     "error": "Pencarian gagal. Silakan coba lagi.",
     "retry": "Coba Lagi",
-    "catalogUnavailable": "Album atau artis ini tidak dapat dibuka karena penyedia tidak mengembalikan ID katalog yang valid."
+    "catalogUnavailable": "Album atau artis ini tidak dapat dibuka karena penyedia tidak mengembalikan ID katalog yang valid.",
+    "historyTitle": "Pencarian terakhir",
+    "historyClear": "Bersihkan",
+    "historyRemove": "Hapus pencarian ini"
   },
   "personalFmMode": {
     "openPicker": "Ganti mode FM Pribadi",
@@ -1349,6 +1357,8 @@ export default {
     "caseBrowserClosedEarly": "Browser tertutup secara tak terduga",
     "caseBrowserUnread": "Tidak dapat membaca hasil masuk dari browser",
     "caseBrowserNotOpened": "Tidak dapat membuka browser",
+    "caseMobileNoLogin": "Masuk akun belum tersedia di ponsel",
+    "noteMobileNoLogin": "Pencarian dan pemutaran tetap jalan tanpa akun; playlist dan suka butuh aplikasi desktop.",
     "caseAccountNotRead": "Gagal membaca akun",
     "caseUnknown": "Proses masuk gagal",
     "noteCheckNetwork": "Periksa jaringan, lalu coba lagi",
@@ -1411,6 +1421,8 @@ export default {
     "loginNote": "Buka Aplikasi Netease Music > Discover > Pindai QR",
     "loginTitleKugou": "Pindai dengan KuGou Music",
     "loginNoteKugou": "Buka KuGou Music dan pindai kode QR ini",
+    "loginTitleQishui": "Pindai dengan Douyin / Soda Music",
+    "loginNoteQishui": "Pindai kode QR ini di Douyin atau Soda Music dan konfirmasi otorisasinya (termasuk informasi keanggotaan)",
     "loginTitleQq": "Pindai untuk masuk ke QQ Music",
     "loginTitleBodian": "Pindai dengan Bodian Music",
     "loginNoteBodian": "Pindai kode ini dengan aplikasi Bodian Music dan konfirmasi masuk",
@@ -1658,8 +1670,13 @@ export default {
     "netease": "NetEase Cloud Music",
     "qq": "QQ Music",
     "kugou": "Kugou Music",
+    "qishui": "Soda Music",
     "spotify": "Spotify",
     "amll": "AMLLDB"
+  },
+  "qishui": {
+    "recentPlayed": "Baru diputar",
+    "recommended": "Untuk Anda",
   },
   "globalLyricOffset": {
     "title": "Offset Waktu Global",
@@ -2007,6 +2024,9 @@ export default {
     "memoryMonitor": "Pemantau memori",
     "memoryMonitorDesc": "Mengambil sampel tiap proses dan merekam kurvanya",
     "memoryMonitorInterval": "Interval",
+    "memoryMonitorOpen": "Buka jendela monitor",
+    "debugLogDirPick": "Pilih folder log",
+    "debugLogDirReset": "Pakai folder bawaan",
     "memoryCurrent": "Saat ini",
     "memoryPeak": "Puncak",
     "memoryFloor": "Terendah",
@@ -2254,6 +2274,14 @@ export default {
     "modVisualizerSettingsReset": "Kembalikan ke bawaan",
     "modVisualizerSettingsOn": "Aktif",
     "modVisualizerSettingsOff": "Nonaktif",
+    "modSecretSet": "Sudah diatur",
+    "modSecretUnset": "Belum diatur",
+    "modSecretPlaceholder": "Masukkan lalu simpan; tidak akan ditampilkan lagi",
+    "modSecretReplacePlaceholder": "Masukkan nilai baru untuk mengganti yang tersimpan",
+    "modSecretSave": "Simpan",
+    "modSecretClear": "Hapus",
+    "modSecretSessionOnly": "Sistem ini tidak punya penyimpanan terenkripsi: kunci hanya berlaku selama sesi ini dan harus dimasukkan lagi setelah aplikasi dimulai ulang.",
+    "modSecretSaveFailed": "Gagal menyimpan; lihat log pengembang.",
     "foliumTuningDesc": "Ditambahkan oleh mod. Berlaku langsung dan tersimpan otomatis.",
     "foliumMissingSelection": "Pilihan tersimpan berasal dari mod \"{{modId}}\" yang tidak berjalan. Bawaan ditampilkan sampai mod itu diaktifkan lagi.",
     "lyricsAnimationAdjust": "Sesuaikan Animasi Lirik",
@@ -3138,6 +3166,25 @@ export default {
       "qqPrivatePlaylists": {
         "title": "Playlist Pribadi QQ Music",
         "description": "Setelah masuk, playlist pribadi buatan Anda kini dapat memuat lagu dengan paging sungguhan. Backend yang di-host sendiri harus memakai qq-music-api 3.1.2 atau lebih baru; backend lama beralih otomatis, dan playlist yang tidak dapat dibaca kini menjelaskan bahwa playlist itu tidak publik, alih-alih tampil kosong tanpa keterangan."
+      }
+    },
+    "v0_7_22": {
+      "intro": "Selamat datang di 0.7.22, Sparkle Update—sebuah rilis besar. Rilis ini menambahkan Qishui Music, menghadirkan Hanabi, gaya lirik kembang api ala Jepang, membiarkan Anda memilih gaya mana yang diacak per lagu, dan login tidak lagi terhapus setelah mulai ulang hanya karena jaringan atau server bermasalah.",
+      "qishui": {
+        "title": "Qishui Music",
+        "description": "Qishui Music hadir: masuk dari jendela login dengan memindai memakai Douyin. Cari, putar (kualitas standar), baca lirik tersinkron per kata dan lagu teratas artis, serta buka playlist Anda sendiri dan \"Terakhir diputar di Qishui\"; feed rekomendasi dan stasiun suasana diputar sebagai FM Pribadi, dan kartu suasana di beranda langsung memutar dengan satu ketukan. Anda bisa menyukai lagu, menambah dan menghapus lagu di playlist buatan sendiri, dan memakai Tidak suka di FM Pribadi. Lagu tanpa sumber yang bisa langsung diputar tidak dapat diputar, dan menjelajah album, membuat playlist, serta menyimpan playlist belum didukung. Lagu lokal yang cocok dengan lagu Qishui juga bisa mengambil liriknya."
+      },
+      "hanabi": {
+        "title": "Hanabi",
+        "description": "Gaya lirik baru bernuansa PV lirik Jepang: setiap baris muncul huruf demi huruf di atas blok warna, ornamen seperti kembang api mekar di sepanjang teks, dan di antara adegan seluruh pemandangan berputar dan naik mengikuti kembang api yang meluncur, dengan potongan film, stiker, dan selotip sebagai hiasan kolase serta cahaya yang menguat saat reff. Kembang api, teks, hiasan, dan warna bisa diatur di pengaturan gaya, dengan tingkat kualitas; di Mode ketukan pintar, kembang api meletus di langit malam setiap ketukan dan kamera mendorong mendekat mengikutinya."
+      },
+      "randomStyles": {
+        "title": "Pilih Gaya Acak Sendiri",
+        "description": "Pemilih gaya lirik mendapat Acak: centang sebagian atau semua gaya bawaan untuk membentuk kumpulan acak, dan setiap lagu beralih ke salah satunya, tidak pernah sama dua kali berturut-turut, masing-masing dengan pengaturan tersimpannya sendiri. Dari panel pemutar Anda bisa mengundi ulang gaya untuk lagu saat ini atau mengubah kumpulannya; kumpulan ini ikut dalam impor, ekspor, dan sinkronisasi konfigurasi."
+      },
+      "moreDetails": {
+        "title": "Peningkatan Lainnya",
+        "description": "Login di setiap platform tidak lagi terhapus setelah mulai ulang hanya karena jaringan atau server sedang bermasalah. Mode ketukan pintar mendapat pilihan \"Hanya yang sudah dianalisis\", dan sakelar utamanya pindah ke halaman Global baru di jendela gaya lirik; lagu lokal dan Navidrome kini juga mendapat analisis transisi automix; pemindaian lokal mendukung DSD (.dsf dan .dff). Bilah info Bravais bisa otomatis, vertikal, atau horizontal, dan dinding Jelajahi-nya kini menyertakan putaran terakhir. API mod naik ke Folium 1.7."
       }
     },
     "v0_7_21": {
@@ -5208,5 +5255,14 @@ export default {
         "noMatch": "“Jangan gunakan metadata online” di kiri bawah membuat lagu ini hanya memakai milik berkasnya."
       }
     }
+  },
+  "siteUpdate": {
+    "title": "Versi baru sudah terbit",
+    "found": "Situs sudah punya {{version}}; salinan ini belum yang terbaru.",
+    "current": "Salinan ini {{version}}",
+    "download": "Unduh",
+    "skip": "Lewati",
+    "skipHint": "Melewati versi ini membuatnya diam sampai hari ini berakhir; besok akan muncul lagi.",
+    "defaultNotes": "Versi yang lebih baru sudah dipasang di situs; Anda bisa mengunduhnya di browser."
   }
 } as const;

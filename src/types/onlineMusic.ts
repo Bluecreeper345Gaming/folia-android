@@ -99,6 +99,12 @@ export interface ProviderAudioSource {
      * playback and the media cache ask.
      */
     preview?: boolean;
+    /**
+     * Where the preview clip starts inside the song, in milliseconds. Only meaningful with `preview`;
+     * absent means the clip starts at the song's start. Playback reads it with the URL
+     * (`omni.previewClipStartMsOfAudioSource`) to line the lyrics up with the clip.
+     */
+    clipStartMs?: number;
 }
 
 export type ProviderSongAvailabilityState = 'playable' | 'unavailable' | 'unknown';
@@ -227,6 +233,8 @@ export type LoginCaseId =
     | 'local-service-stopped' | 'local-service-unavailable' | 'cannot-listen'
     | 'no-browser' | 'browser-still-open' | 'browser-closed-early' | 'browser-unread' | 'browser-not-opened'
     | 'account-not-read'
+    // 手机版没有可用的登录通道（WebView 里开不了 Google/Spotify 的授权页）：免登录可用，账号功能不可用。
+    | 'mobile-no-login'
     | 'unknown';
 
 // provider 对一次登录失败知道的事实。只放可以公开贴出来的内容：不含 cookie、token、IP 或账号信息。

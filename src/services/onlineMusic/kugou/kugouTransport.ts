@@ -1,4 +1,5 @@
 import md5 from 'blueimp-md5';
+import { searchKugouPublic } from './kugouPublic';
 import { OnlineProviderError } from '../../../types/onlineMusic';
 import { readProviderSessionValue, removeProviderSessionValue, writeProviderSessionValue } from '../providerStorage';
 import { lyricProxyWebUrl, requestLyricProxyOnDesktop } from '../../lyricProxy';
@@ -12,6 +13,7 @@ export const KUGOU_OPERATIONS = [
     'user_playlist', 'user_cloud', 'user_cloud_url', 'search',
     'audio', 'krm_audio', 'song_url', 'song_climax', 'search_lyric', 'lyric', 'playlist_track_all',
     'playlist_detail',
+    'song_like',
     'album_detail', 'album_songs', 'artist_detail', 'artist_albums', 'artist_audios',
     'everyday_recommend', 'everyday_history', 'personal_fm', 'top_card_youth', 'playlist_add',
     'playlist_del', 'playlist_tracks_add', 'playlist_tracks_del',
@@ -46,6 +48,7 @@ const ENDPOINTS: Record<KugouOperation, string> = {
     lyric: '/lyric',
     playlist_track_all: '/playlist/track/all',
     playlist_detail: '/playlist/detail',
+    song_like: '/user/song/like',
     album_detail: '/album/detail',
     album_songs: '/album/songs',
     artist_detail: '/artist/detail',
@@ -241,73 +244,26 @@ export const hasKugouAuthenticatedSearchSession = (): boolean => {
     ));
 };
 
-// Reproduces KuGou's anonymous Android search signature used before account-backed provider search.
+// KuGou's anonymous search without any signature: the old complexsearch endpoint now answers
+// `20006 err signature` to every unsigned request (empty result set, i.e. "search finds nothing"),
+// while the mobile CDN's search endpoint still answers without one. Kept behind the same name so the
+// provider's anonymous path — and its callers — stay unchanged.
 export const requestKugouAnonymousSearch = async (
     keyword: string,
     page: number,
     pagesize: number,
 ): Promise<any> => {
-    const clientTimeMs = Date.now();
-    const clientTimeSec = Math.floor(clientTimeMs / 1000);
-    const mid = md5(String(clientTimeMs));
-    const params: Record<string, string | number> = {
-        sorttype: '0',
-        keyword,
-        pagesize,
-        page,
-        userid: '0',
-        appid: '3116',
-        token: '',
-        clienttime: clientTimeSec,
-        iscorrection: '1',
-        uuid: '-',
-        mid,
-        dfid: '-',
-        clientver: '11070',
-        platform: 'AndroidFilter',
-    };
-    const signatureSource = Object.keys(params)
-        .sort()
-        .map(key => `${key}=${params[key]}`)
-        .join('');
-    params.signature = md5(
-        `LnT6xpN3khm36zse0QzvmgTZ3waWdRSA${signatureSource}LnT6xpN3khm36zse0QzvmgTZ3waWdRSA`,
-    );
-
-    const targetUrl = new URL('http://complexsearch.kugou.com/v2/search/song');
-    Object.entries(params).forEach(([key, value]) => targetUrl.searchParams.set(key, String(value)));
-    const requestUrl = typeof window !== 'undefined' && window.electron
-        ? targetUrl.toString()
-        : lyricProxyWebUrl(targetUrl.toString());
-    const response = await fetch(requestUrl, {
-        method: 'GET',
-        credentials: 'omit',
-        headers: {
-            'User-Agent': 'Android14-1070-11070-201-0-SearchSong-wifi',
-            'KG-Rec': '1',
-            'KG-RC': '1',
-            'KG-CLIENTTIMEMS': String(clientTimeMs),
-            mid,
-            'x-router': 'complexsearch.kugou.com',
-        },
-    });
-    if (!response.ok) {
+    const answer = await searchKugouPublic(keyword, page, pagesize);
+    const errcode = Number(answer?.errcode ?? 0);
+    const status = Number(answer?.status ?? 0);
+    if (errcode !== 0 || (status !== 0 && status !== 1)) {
         throw new OnlineProviderError(
             'network',
-            `KuGou anonymous search failed: ${response.status}`,
+            `KuGou anonymous search failed: ${errcode || status}${answer?.error ? ` (${answer.error})` : ''}`,
             'kugou',
         );
     }
-    const body = await response.json();
-    const errorCode = Number(body?.error_code);
-    if (Number.isFinite(errorCode) && errorCode !== 0 && errorCode !== 200) {
-        throw new OnlineProviderError(
-            'network',
-            `KuGou anonymous search failed: ${errorCode}`,
-            'kugou',
-        );
-    }
-    return body;
+    return answer;
 };
 
 // Legacy playInfo failures: a non-2xx answer is `network`, an unreadable body is `invalid-response`. A non-2xx is

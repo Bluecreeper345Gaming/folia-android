@@ -118,6 +118,9 @@ export const EXTENSION_API_BASE = 'extension';
 export const isExtensionBase = (base: string | null | undefined): boolean => base === EXTENSION_API_BASE;
 
 export { handleNeteaseEndpoint, handleKugouEndpoint, handleQqEndpoint };
+/** YouTube Music 传输层入口（Android：youtubei.js 在 WebView 里跑） */
+export { handleYtmOperation } from './ytm';
+
 export { isNativeBridgeAvailable, simpleResponse, jsonResponse, extensionUnsupported };
 export type { SimpleResponse };
 
@@ -198,6 +201,9 @@ export const extensionBodianRequest = async (
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> => handleBodianRequest(operation, params);
 
+/** 汽水音乐：整个车机 Luna 协议在 WebView 内跑（桌面版在 Electron 主进程）。 */
+export { qishuiRequest } from './qishui';
+
 /** 酷狗传输层入口：登录/状态/播放走参考项目原函数（reference/*.js），其余保留旧实现 */
 const KG_REFERENCE_PATHS: Record<string, string> = {
   '/login/qr/key': '/api/kg/login/qr/key',
@@ -208,6 +214,8 @@ const KG_REFERENCE_PATHS: Record<string, string> = {
   '/user/vip/detail': '/api/kg/vip/detail',
   '/song/url': '/api/kg/song/url',
   '/user/playlist': '/api/kg/user/playlists',
+  // 心形写入（收藏/取消收藏）必须走参考层：它的 lite 客户端身份与签名是服务端唯一接受的组合。
+  '/user/song/like': '/api/kg/song/like',
 };
 
 export const extensionKugouRequest = async (

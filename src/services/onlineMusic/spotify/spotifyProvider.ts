@@ -18,6 +18,7 @@ import { spotifyMutations } from './spotifyMutations';
 import { resetSpotifyRecommendations, spotifyRecommendations } from './spotifyRecommendations';
 import { describeSpotifyLoginFailure, spotifyLoginFailure } from './spotifyLoginFailure';
 import { describeSpotifyFailure } from './spotifyFailure';
+import { findPlayableReplacement } from './spotifyReplacement';
 
 // src/services/onlineMusic/spotify/spotifyProvider.ts
 // Spotify adapter. Sign-in happens in the browser where the person is already signed in to
@@ -139,6 +140,13 @@ export const spotifyProvider: OnlineMusicProvider = {
         // Spotify sends them, encrypted and without their key, under the media cache's size limit.
         keepAudio: url => requestSpotify<boolean>('audio_keep', { url, limitBytes: cacheLimitBytes() }),
         hasKeptAudio: url => requestSpotify<boolean>('audio_kept', { url }),
+        // 免费账号拿不到音频（见 docs/spotify-capture/README.md），所以这首歌放不了时，去别的平台找
+        // 同一首歌来放：Spotify 还当目录，声音是别人的。会员账号有真音频，不换。
+        async getReplacement(song) {
+            const account = await requestSpotify<ProviderUser | null>('login_status').catch(() => null);
+            if (Number(account?.vipType) > 0) return null;
+            return findPlayableReplacement(song);
+        },
     },
     lyrics: {
         // Spotify's own lyrics are timed by line, or not at all. Untimed ones, and a failure to read

@@ -382,6 +382,7 @@ export default {
     "songUnavailable": "Song has been taken down",
     "songUnavailableAlternativeTitle": "Alternate version available",
     "songUnavailableAlternativeDescription": "\"{{song}}\" is unavailable. {{typeDesc}}. Play an alternate version instead?",
+    "songUnplayableAlternativeDescription": "\"{{song}}\" cannot be played on this account ({{typeDesc}}). Play that one instead?",
     "songUnavailableAlternativeDefaultType": "Another version can be played",
     "playAlternativeVersion": "Play alternate",
     "skipUnavailableAction": "Skip",
@@ -1140,6 +1141,7 @@ export default {
     "directoryOpened": "Opened the mods folder in your file manager",
     "dropZipHint": "Drop a mod .zip here to install it",
     "installing": "Installing mod…",
+    "installZip": "Install mod (.zip)",
     "installSuccess": "Installed mod: {{id}} (you can disable or update it from the list)",
     "storageData": "Data {{size}}",
     "storageCache": "Cache {{size}}",
@@ -1151,6 +1153,9 @@ export default {
     "errors": {
       "no-electron-bridge": "Mod system is unavailable in this environment",
       "open-directory-failed": "Could not open the mods folder: {{value}}",
+      "android-mod-folder": "There is no file manager to open here: put the mod's folder in Android/data/ti.folia.ming/files/mods (or the app's private mods folder), then refresh this list.",
+      "android-install-unsupported": "Installing a zip is not supported here: unzip it, put the mod's folder in mods, then refresh.",
+      "install-write-failed": "Could not write the mod's files; check the phone's free storage and try again.",
       "install-no-path": "Could not read the dropped file's location",
       "install-not-zip": "The package must be a .zip file",
       "install-corrupt-zip": "Could not unzip the archive; it may be corrupted",
@@ -1233,7 +1238,10 @@ export default {
     "playTrack": "Play track",
     "error": "Search failed. Please try again.",
     "retry": "Retry",
-    "catalogUnavailable": "This album or artist cannot be opened because the provider did not return a valid catalog ID."
+    "catalogUnavailable": "This album or artist cannot be opened because the provider did not return a valid catalog ID.",
+    "historyTitle": "Recent searches",
+    "historyClear": "Clear",
+    "historyRemove": "Remove this search"
   },
   "personalFmMode": {
     "openPicker": "Switch the Personal FM mode",
@@ -1349,6 +1357,8 @@ export default {
     "caseBrowserClosedEarly": "Browser closed unexpectedly",
     "caseBrowserUnread": "Cannot read the sign-in from the browser",
     "caseBrowserNotOpened": "Cannot open the browser",
+    "caseMobileNoLogin": "Signing in is not available on mobile",
+    "noteMobileNoLogin": "Search and playback work without an account; playlists and likes need the desktop app.",
     "caseAccountNotRead": "Failed to read the account",
     "caseUnknown": "Sign-in failed",
     "noteCheckNetwork": "Check your network, then try again",
@@ -1411,6 +1421,8 @@ export default {
     "loginNote": "Open Netease Music App > Discover > Scan QR",
     "loginTitleKugou": "Scan with KuGou Music",
     "loginNoteKugou": "Open KuGou Music and scan this QR code",
+    "loginTitleQishui": "Scan with Douyin / Soda Music",
+    "loginNoteQishui": "Scan this QR code in Douyin or Soda Music and confirm the authorization (membership included)",
     "loginTitleQq": "Scan to sign in to QQ Music",
     "loginTitleBodian": "Scan with Bodian Music",
     "loginNoteBodian": "Scan this code with the Bodian Music app and confirm sign-in",
@@ -1658,8 +1670,13 @@ export default {
     "netease": "NetEase Cloud Music",
     "qq": "QQ Music",
     "kugou": "Kugou Music",
+    "qishui": "Soda Music",
     "spotify": "Spotify",
     "amll": "AMLLDB",
+  },
+  "qishui": {
+    "recentPlayed": "Recently played",
+    "recommended": "Made for you",
   },
   "globalLyricOffset": {
     "title": "Global Timing Offset",
@@ -2007,6 +2024,9 @@ export default {
     "memoryMonitor": "Memory monitor",
     "memoryMonitorDesc": "Samples every process and records the curve",
     "memoryMonitorInterval": "Interval",
+    "memoryMonitorOpen": "Open monitor window",
+    "debugLogDirPick": "Choose log folder",
+    "debugLogDirReset": "Use default folder",
     "memoryCurrent": "Current",
     "memoryPeak": "Peak",
     "memoryFloor": "Floor",
@@ -2254,6 +2274,14 @@ export default {
     "modVisualizerSettingsReset": "Reset to defaults",
     "modVisualizerSettingsOn": "On",
     "modVisualizerSettingsOff": "Off",
+    "modSecretSet": "Set",
+    "modSecretUnset": "Not set",
+    "modSecretPlaceholder": "Enter and save; it is not shown again",
+    "modSecretReplacePlaceholder": "Enter a new value to replace the saved one",
+    "modSecretSave": "Save",
+    "modSecretClear": "Clear",
+    "modSecretSessionOnly": "No encrypted storage is available on this system: the key lasts for this run only and must be entered again after a restart.",
+    "modSecretSaveFailed": "Could not save it; see the developer log.",
     "foliumTuningDesc": "Added by a mod. Applied live and saved automatically.",
     "foliumMissingSelection": "Your saved choice comes from the mod \"{{modId}}\", which is not running. Showing the default until it is enabled again.",
     "lyricsAnimationAdjust": "Lyrics Animation Adjust",
@@ -3138,6 +3166,25 @@ export default {
       "qqPrivatePlaylists": {
         "title": "Private QQ Music Playlists",
         "description": "When signed in, your own private playlists now load their songs, with real paging. Self-hosted backends must run qq-music-api 3.1.2 or later; older backends fall back automatically, and a playlist that cannot be read now says it is not public instead of silently showing as empty."
+      }
+    },
+    "v0_7_22": {
+      "intro": "Welcome to 0.7.22, the Sparkle Update—a major release. It adds Qishui Music, brings Hanabi, a Japanese fireworks lyric style, lets you choose which styles the per-song random style picks from, and stops sign-ins being cleared after a restart just because the network or server was down.",
+      "qishui": {
+        "title": "Qishui Music",
+        "description": "Qishui Music arrives: sign in from the login window by scanning with Douyin. Search, play (standard quality), read word-synced lyrics and artists' top songs, and open your own playlists and \"Recently played on Qishui\"; the recommendation feed and scene stations play as Personal FM, and the scene cards on the home screen start playing in one tap. You can like songs, add and remove songs in playlists you created, and use Dislike in Personal FM. Songs without a directly playable source can't be played, and browsing albums, creating playlists and saving playlists aren't supported yet. Local songs matched to a Qishui song can fetch its lyrics too."
+      },
+      "hanabi": {
+        "title": "Hanabi",
+        "description": "A new lyric style in the look of a Japanese lyric PV: each line enters character by character on blocks of color, firework-like ornaments bloom along the text, and between shots the whole scene spins and rises with the launching fireworks, with film strips, stickers and tape as collage decor and a glow that lifts during the chorus. Fireworks, text, decor and colors are adjustable in the style settings, with quality tiers; in Smart beat mode a firework bursts in the night sky on every beat and the camera pushes in with it."
+      },
+      "randomStyles": {
+        "title": "Choose Your Random Styles",
+        "description": "The lyric style picker gains Random: tick some or all built-in styles to form a random pool, and each song switches to one of them, never the same twice in a row, each with its own saved settings. From the player panel you can redraw a style for the current song or edit the pool; the pool is included in config import, export and sync."
+      },
+      "moreDetails": {
+        "title": "More Improvements",
+        "description": "Sign-ins on every platform are no longer cleared after a restart just because the network or server was down. Smart beat mode gains an \"Analysed only\" setting, and its main switch moves to a new Global page in the lyric style window; local and Navidrome songs now get automix transition analysis too; local scanning supports DSD (.dsf and .dff). Bravais' info bar can be automatic, vertical or horizontal, and its Explore wall now includes recently played. The mod API moves up to Folium 1.7."
       }
     },
     "v0_7_21": {
@@ -5208,5 +5255,14 @@ export default {
         "noMatch": "“Don't use online metadata” at the bottom left makes the song use only what the file has."
       }
     }
+  },
+  "siteUpdate": {
+    "title": "A new version is out",
+    "found": "The site has {{version}}; this copy is not the latest.",
+    "current": "This copy is {{version}}",
+    "download": "Download",
+    "skip": "Skip",
+    "skipHint": "Skipping this version keeps it quiet for the rest of today; it comes back tomorrow.",
+    "defaultNotes": "A newer version has been posted on the site; you can download it in a browser."
   }
 } as const;

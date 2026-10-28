@@ -304,6 +304,39 @@ export const exchangeCredential = async (checkSigUrl: string): Promise<QqCredent
 // ---------------------------------------------------------------------------
 // 端点处理
 
+/**
+ * QQ 红心写入的回包判定（照 src/audioNative/reference/qq.js 的 qqLikeWriteResult）：
+ * `code` 1000 是登录失效，非 0/200 的码与 `v_failedSongId` 都是这次没写进去。
+ */
+const qqLikeWriteAccepted = (raw: any): { ok: boolean; loginRequired: boolean; code: number } => {
+  const block = raw?.req_0 || {};
+  const data = block.data || {};
+  const code = Number(block.code ?? data.code ?? raw?.code ?? 0);
+  if (code === 1000) return { ok: false, loginRequired: true, code };
+  if (code && code !== 0 && code !== 200) return { ok: false, loginRequired: false, code };
+  const business = Number(data.ret ?? data.resultCode ?? data.errCode ?? 0);
+  if (typeof data.result === 'number' && data.result !== 0 && data.result !== 200) {
+    return { ok: false, loginRequired: false, code: data.result };
+  }
+  if (business && business !== 0 && business !== 200 && typeof data.result !== 'object') {
+    return { ok: false, loginRequired: false, code: business };
+  }
+  const failed = data.v_failedSongId || data.v_failSongId || data.vFailedSongId || data.failedSongIds;
+  if (Array.isArray(failed) && failed.length) return { ok: false, loginRequired: false, code: business || -1 };
+  return { ok: true, loginRequired: false, code: code || 200 };
+};
+
+// 一次 musicu 写入：字段形状与参考层的 qqPlaylistDetailWrite / qqSongFavWrite 相同。
+const qqMusicuWrite = async (
+  module: string,
+  method: string,
+  param: Record<string, unknown>,
+  credential: QqCredential,
+) => {
+  const response = await postMusicu({ module, method, param }, credential);
+  return qqLikeWriteAccepted(response.raw);
+};
+
 export const handleQqEndpoint = async (
   operation: string,
   path: string,
@@ -606,7 +639,12 @@ export const handleQqEndpoint = async (
       case '/song/similar':
         return answer({ code: 200, data: { songs: [] } });
       case '/search': {
-        const searchType = Number(params.type ?? '0');
+        // provider 传的是 type='song'。上游的 search_type 只认数字：0 会被 2001 拒，7 才是「歌曲」。
+        const rawType = String(params.type ?? '').toLowerCase();
+        const searchType = rawType === '' || rawType === 'song'
+          ? 7
+          : (Number.isFinite(Number(rawType)) ? Number(rawType) : 7);
+        const pageSize = Number(params.limit ?? '20');
         const musicu = await postMusicu({
           module: 'music.search.SearchCgiService', method: 'DoSearchForQQMusicLite',
           param: {
@@ -614,22 +652,35 @@ export const handleQqEndpoint = async (
             remoteplace: 'search.android.keyboard',
             query: params.keyword ?? params.query ?? '',
             search_type: searchType,
-            num_per_page: Number(params.limit ?? '20'),
+            num_per_page: pageSize,
             page_num: Number(params.page ?? '1'),
             highlight: 0, nqc_flag: 0, page_id: 1, grp: 1,
           },
         }, credential, { ct: 11, cv: '1003006', v: '1003006', tmeAppID: 'qqmusiclight', nettype: 'NETWORK_WIFI', udid: '0', uid: '0' });
-        return answer({ code: 200, ...(reqData(musicu) ?? {}) });
+        const data = (reqData(musicu) ?? {}) as any;
+        const body = (data?.body ?? {}) as any;
+        // 条目原样交出去：normalizeQqSong 要 file.media_mid —— 播放链接的 filename 由它拼，
+        // 只剩 mid 的瘦条目会让 media_mid ≠ songmid 的那些歌（占多数）拿不到播放链接。
+        const items: any[] = Array.isArray(body.item_song)
+          ? body.item_song
+          : Array.isArray(body.song?.list) ? body.song.list : [];
+        const total = Number(body.total ?? data?.meta?.sum ?? items.length);
+        return answer({
+          code: 200,
+          items,
+          ...(Number.isFinite(total) && total >= 0 ? { total } : {}),
+          more: items.length >= pageSize,
+        });
       }
       case '/song_info': {
-        const songmid = params.songmid ?? '';
+        // 契约与后端 qq-music-api 的 /getSongInfo 一致：provider 读 response.songinfo.data.track_info
+        const songmid = String(params.songmid ?? params.id ?? '');
         const musicu = await postMusicu({
           module: 'music.pf_song_detail_svr', method: 'get_song_detail_yqq',
           param: { song_type: 0, song_mid: songmid },
         }, credential);
         const data = (reqData(musicu) ?? {}) as any;
-        const likedSongs: any[] = Array.isArray(data?.songlist) ? data.songlist : [];
-        return answer({ code: 0, songs: likedSongs, total: Number(data?.total_song_num ?? likedSongs.length), more: false });
+        return answer({ code: 0, response: { songinfo: { data } } });
       }
       case '/song_list_detail': {
         const disstid = Number(params.disstid ?? 0);
@@ -714,13 +765,28 @@ export const handleQqEndpoint = async (
       }
       case '/music_play': {
         const songmid = String(params.songmid ?? params.id ?? '').trim();
-        const mediaId = String(params.mediaId ?? '') || songmid;
         if (!songmid) return answer({ code: 400, data: { message: 'no songmid' } }, 400);
+        let mediaId = String(params.mediaId ?? '').trim();
+        if (!mediaId) {
+          // 没带 media_mid（旧搜索结果、恢复的队列、分享来的条目）：先向单曲详情要一次。
+          // vkey 的 filename 只能拿 media_mid 拼，用 songmid 顶替时上游对大多数歌一律不给链接。
+          try {
+            const detail = await postMusicu({
+              module: 'music.pf_song_detail_svr', method: 'get_song_detail_yqq',
+              param: { song_type: 0, song_mid: songmid },
+            }, credential);
+            const track = (reqData(detail) as any)?.track_info;
+            mediaId = String(track?.file?.media_mid ?? '').trim();
+          } catch {
+            mediaId = '';
+          }
+        }
+        if (!mediaId) mediaId = songmid;
         const quality = String(params.quality ?? '128');
         const preview = String(params.preview ?? '') === '1' || String(params.preview ?? '') === 'true';
         const prefix = preview ? 'RS02' : quality === 'flac' ? 'F000' : Number(quality) >= 320 ? 'M800' : 'M500';
         const ext = !preview && quality === 'flac' ? 'flac' : 'mp3';
-        const filename = `${prefix}${preview ? mediaId : mediaId}.${ext}`;
+        const filename = `${prefix}${mediaId}.${ext}`;
         const musicu = await postMusicu({
           module: 'music.vkey.GetVkey',
           method: 'UrlGetVkey',
@@ -840,8 +906,41 @@ export const handleQqEndpoint = async (
         const tracks = Array.isArray(data?.tracks) ? data.tracks : [];
         return answer({ code: 200, songs: tracks, data: tracks, total: tracks.length, more: false });
       }
+      case '/user/song/like': {
+        // 红心/取消红心：QQ 自己的「我喜欢」是 dirId 201，先走 PlaylistDetailWrite，再退到
+        // SongFavWrite（与参考层同一顺序）。旧后端没有这条路由时，这里是唯一能写的地方。
+        if (!credential) return answer({ error: 'LOGIN_REQUIRED', liked: false }, 401);
+        const song = (payload?.song ?? {}) as { id?: unknown; mid?: unknown };
+        const liked = payload?.liked !== false;
+        const songId = Number(song.id ?? 0);
+        if (!Number.isFinite(songId) || songId <= 0) {
+          return answer({ liked: !liked, error: 'QQ song has no numeric id for a like write' });
+        }
+        const methods = liked ? 'AddSonglist' : 'DelSonglist';
+        for (const songType of [0, 13]) {
+          const result = await qqMusicuWrite(
+            'music.musicasset.PlaylistDetailWrite',
+            methods,
+            { dirId: 201, v_songInfo: [{ songId, songType }] },
+            credential,
+          );
+          if (result.loginRequired) return answer({ error: 'LOGIN_REQUIRED', liked: !liked }, 401);
+          if (result.ok) return answer({ liked, code: result.code, via: 'PlaylistDetailWrite' });
+        }
+        const uin = Number(credential.musicid) || credential.musicid;
+        for (const songType of [0, 13]) {
+          const result = await qqMusicuWrite(
+            'music.musicasset.SongFavWrite',
+            liked ? 'AddSong' : 'DelSong',
+            { uin, v_uin: uin, dirId: 201, ids: [songId], songTypes: [songType] },
+            credential,
+          );
+          if (result.loginRequired) return answer({ error: 'LOGIN_REQUIRED', liked: !liked }, 401);
+          if (result.ok) return answer({ liked, code: result.code, via: 'SongFavWrite' });
+        }
+        return answer({ liked: !liked, error: 'QQ like write was refused' });
+      }
       case '/user/subscription-status':
-      case '/user/song/like':
       case '/user/album/subscribe':
       case '/user/playlist/tracks':
       case '/user/playlist/subscribe':

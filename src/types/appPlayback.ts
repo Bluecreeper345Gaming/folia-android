@@ -43,6 +43,8 @@ export type UnavailableReplacementRequest = {
     replacementSong: SongResult;
     replacementSongId: MediaId;
     typeDesc?: string;
+    /** 为什么要换：下架，还是这一首在这个账号上放不了（会员、地区）。对话框说明不一样。 */
+    why?: 'taken-down' | 'unplayable';
     queue: SongResult[];
     isFmCall: boolean;
     options: PlaybackNavigationOptions;

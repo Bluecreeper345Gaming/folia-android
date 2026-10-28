@@ -79,7 +79,7 @@ const readSession = (cookieParam: string | undefined): Session => {
   return {
     token, userid,
     // 设备字段优先取会话 Cookie 里的（参考层登录身份），与 token 绑定一致
-    dfid: map.get('dfid') || map.get('KUGOU_API_DFID') || map.get('kg_dfid') || getDfid(),
+    dfid: map.get('dfid') || map.get('KUGOU_API_DFID') || map.get('kg_dfid') || readProviderSessionValue('kugou', 'dfid') || getDfid(),
     mid: map.get('kg_mid') || map.get('KUGOU_API_MID') || getMid(),
     nickname: map.get('NickName') ?? map.get('nickname') ?? '',
     pic: map.get('pic') ?? '',
@@ -303,6 +303,7 @@ const signedCall = async (
 };
 
 const ok = (body: unknown): SimpleResponse => simpleResponse(200, body);
+
 
 // ---------------------------------------------------------------------------
 // 端点处理
@@ -683,26 +684,93 @@ export const handleKugouEndpoint = async (endpoint: string): Promise<SimpleRespo
       case '/playlist_tracks_add': {
         const entries = (params.data ?? '').split(',').filter(Boolean).map(entry => {
           const [name = '', hash = '', album_id = '', mixsongid = ''] = entry.split('|');
-          return { number: 1, name, hash, size: 0, sort: 0, timelen: 0, bitrate: 0, album_id: Number(album_id || '0'), mixsongid: Number(mixsongid || '0') };
+          // 酷狗接口按小写 hash 认歌：provider 内部为了去重一直用大写，送到这里必须转回来，
+          // 否则 add_song 会收下一次写入却什么也不加（界面上就是「点了没反应」）。
+          return { name, hash: String(hash).toLowerCase(), album_id: Number(album_id || '0'), mixsongid: Number(mixsongid || '0') };
         });
-        const answer = await signedCall(`${GATEWAY}/cloudlist.service/v6/add_song`, {}, session, {
+        // album_id / mixsongid 缺一个，上游就认不出这首歌（回 status:0 但什么也没加）：
+        // 按 hash 问一次 kmr 的音频信息补齐，和参考层 resolveKGSongMetaForFavorite 同一个来路。
+        for (const entry of entries) {
+          if (entry.album_id > 0 && entry.mixsongid > 0) continue;
+          try {
+            const clienttimeMs = String(Date.now());
+            const info = await signedCall('https://kmr.service.kugou.com/v1/audio/audio', {
+              appid: APP_ID,
+              clientver: CLIENT_VER,
+              clienttime: clienttimeMs,
+              dfid: session.dfid,
+              mid: session.mid,
+              key: signParamsKey(clienttimeMs),
+            }, session, {
+              method: 'POST',
+              bodyObj: { data: [{ hash: entry.hash, audio_id: 0 }] },
+              xRouter: 'kmr.service.kugou.com',
+            });
+            const detail = (info.body as any)?.data?.[0] ?? {};
+            if (!entry.album_id) entry.album_id = Number(detail.album_id || detail.albumid || 0);
+            if (!entry.mixsongid) entry.mixsongid = Number(detail.mixsongid || detail.audio_id || detail.album_audio_id || 0);
+          } catch (error) {
+            console.warn('[Kugou-ext] could not resolve the song ids for add_song', String(error));
+          }
+        }
+        const bodyData = entries.map(entry => ({
+          number: 1,
+          name: entry.name,
+          hash: entry.hash,
+          size: 0,
+          sort: 0,
+          timelen: 0,
+          bitrate: 0,
+          album_id: entry.album_id,
+          mixsongid: entry.mixsongid,
+        }));
+        // 参数与参考层 handleKGPlaylistAddSong / handleKGSongLike 对齐：
+        // ① last_time / last_area 必须进到签名参数里（extraQuery 不参与签名，且会被 signedCall 丢掉）
+        // ② 写入类接口要带 Authorization: KugooToken <token>
+        // ③ 这条路已经带 /cloudlist.service 前缀，网关按前缀路由；再叠 x-router 会把整条带前缀的
+        //    路径转给后端（后端没有该路径）→ 404，所以这里不能加 x-router。
+        const answer = await signedCall(`${GATEWAY}/cloudlist.service/v6/add_song`, {
+          last_time: String(Math.floor(Date.now() / 1000)),
+          last_area: 'gztx',
+        }, session, {
           method: 'POST',
           bodyObj: {
             userid: Number(session.userid || '0'), token: session.token, listid: Number(params.listid ?? '0'),
-            list_ver: 0, type: 0, slow_upload: 1, scene: 'false;null', data: entries,
+            list_ver: 0, type: 0, slow_upload: 1, scene: 'false;null', data: bodyData,
           },
-          extraQuery: { last_time: '0', last_area: 'gztx' },
+          extraHeaders: session.token ? { Authorization: `KugooToken ${session.token}` } : {},
         });
+        // 上游回 status:0 表示这次没写进去（歌单号、hash 或权限不对），日志里留下面向诊断的一行。
+        console.info('[Kugou-ext] add_song answered', JSON.stringify({
+            status: (answer.body as any)?.status,
+            error_code: (answer.body as any)?.error_code,
+            listid: params.listid,
+            data: bodyData,
+        }).slice(0, 500));
+        if (Number((answer.body as any)?.status ?? 1) !== 1) {
+          console.warn('[Kugou-ext] add_song refused', JSON.stringify({
+            status: (answer.body as any)?.status,
+            error_code: (answer.body as any)?.error_code,
+            error: (answer.body as any)?.error,
+            body: answer.body,
+          }).slice(0, 600));
+        }
         return ok(answer.body);
       }
       case '/playlist_tracks_del': {
-        const fileids = (params.data ?? '').split(',').filter(Boolean).map(id => ({ fileid: Number(id) }));
-        const answer = await signedCall(`${GATEWAY}/v4/delete_songs`, {}, session, {
+        // provider 送的是 `fileids`（歌单内的行号），早先这里只读 `data`，删歌一直什么也没删。
+        const rawIds = params.fileids ?? params.data ?? '';
+        const fileids = String(rawIds).split(',').filter(Boolean).map(id => ({ fileid: Number(id) }));
+        const answer = await signedCall(`${GATEWAY}/cloudlist.service/v4/delete_songs`, {
+          last_time: String(Math.floor(Date.now() / 1000)),
+          last_area: 'gztx',
+        }, session, {
           method: 'POST',
           bodyObj: {
             listid: Number(params.listid ?? '0'), userid: Number(session.userid || '0'),
             data: fileids, type: 0, token: session.token, list_ver: 0,
           },
+          extraHeaders: session.token ? { Authorization: `KugooToken ${session.token}` } : {},
         });
         return ok(answer.body);
       }

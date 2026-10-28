@@ -55,7 +55,14 @@ export const ytmProvider: OnlineMusicProvider = {
     // radios, and the playlists of the account's music page. It has no daily songs, which YouTube
     // Music has no counterpart of. Its recommendation page is the explore tab.
     capabilities: {
-        search: true, playback: true, lyrics: true, wordByWordLyrics: false, auth: true,
+        search: true, playback: true, lyrics: true, wordByWordLyrics: false,
+        // 桌面版由主进程开浏览器窗口抓 Cookie；手机端由原生插件开应用内的 WebView 登录
+        // （audioNative/ytmLogin.ts），两者都能拿到会话。
+        auth: typeof window !== 'undefined' && (
+            typeof window.electron?.ytmRequest === 'function'
+            || Boolean((window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } })
+                .Capacitor?.isNativePlatform?.())
+        ),
         userLibrary: true, playlists: true, albums: true, artists: true, userAlbums: true,
         recommendations: true, explore: true, mutations: true, playlistTrackMutations: true, likes: true,
         // Albums and other people's playlists (`mutations.canSubscribe`).

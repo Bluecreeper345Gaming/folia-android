@@ -136,8 +136,49 @@ public final class CrashDiagnostics {
             // (a renderer death, an uncaught exception), and an asynchronous write can be lost when
             // the process goes away right afterwards — which is how a crash ended up as "(none)".
             preferences.edit().putString(KEY_HISTORY, next.toString()).commit();
+            // 同时留一份到外部存储：内部目录别的程序（包括 root 之外的检查）读不到，
+            // 而 /sdcard/Android/data/<包名>/files/logs 是可以取出来看的。
+            appendExternalLine(context, entry);
         } catch (Exception ignored) {
             // Crash recording must never become a second crash.
+        }
+    }
+
+    private static final long EXTERNAL_LOG_MAX_BYTES = 2L * 1024 * 1024;
+
+    private static void appendExternalLine(Context context, JSONObject entry) {
+        java.io.Writer writer = null;
+        try {
+            java.io.File dir = context.getExternalFilesDir("logs");
+            if (dir == null) return;
+            if (!dir.exists() && !dir.mkdirs()) return;
+            java.io.File file = new java.io.File(dir, "folia-runtime.log");
+            if (file.exists() && file.length() > EXTERNAL_LOG_MAX_BYTES) {
+                java.io.File rotated = new java.io.File(dir, "folia-runtime.1.log");
+                if (rotated.exists()) rotated.delete();
+                file.renameTo(rotated);
+            }
+            writer = new java.io.OutputStreamWriter(
+                new java.io.FileOutputStream(file, true), "UTF-8");
+            StringBuilder line = new StringBuilder();
+            line.append(entry.optString("at")).append(' ');
+            line.append('[').append(entry.optString("source")).append('/')
+                .append(entry.optString("thread")).append("] ");
+            line.append(entry.optString("type")).append(" — ");
+            line.append(entry.optString("message").replace('\n', ' '));
+            String stack = entry.optString("stack", "");
+            if (!stack.isEmpty()) {
+                line.append(" | ").append(stack.replace('\n', ' ').substring(0, Math.min(600, stack.length())));
+            }
+            line.append('\n');
+            writer.write(line.toString());
+            writer.flush();
+        } catch (Exception ignored) {
+            // 记日志自己不能变成第二个错。
+        } finally {
+            if (writer != null) {
+                try { writer.close(); } catch (Exception ignored) { }
+            }
         }
     }
 
