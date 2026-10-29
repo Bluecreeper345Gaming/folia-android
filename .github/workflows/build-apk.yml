@@ -16,7 +16,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22 # <-- Change 20 to 22
           cache: 'npm'
 
       - name: Set up Java JDK 17
