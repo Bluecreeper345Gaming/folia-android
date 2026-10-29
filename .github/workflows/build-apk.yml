@@ -34,6 +34,9 @@ jobs:
       - name: Create Local Environment File
         run: cp .env.example .env.local
 
+      - name: Build Web Assets
+        run: npm run build
+
       - name: Sync Capacitor Android
         run: npx cap sync android
 
