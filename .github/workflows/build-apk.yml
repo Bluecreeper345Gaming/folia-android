@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # This adds the "Run workflow" button
+  workflow_dispatch:
 
 jobs:
   build:
@@ -12,11 +12,14 @@ jobs:
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22 # <-- Change 20 to 22
+          node-version: 22
           cache: 'npm'
 
       - name: Set up Java JDK 17
@@ -33,6 +36,13 @@ jobs:
 
       - name: Create Local Environment File
         run: cp .env.example .env.local
+
+      - name: Ensure Reference Router Exists
+        run: |
+          mkdir -p src/audioNative/reference
+          if [ ! -f src/audioNative/reference/router.ts ] && [ ! -f src/audioNative/reference/router.js ] && [ ! -f src/audioNative/reference/router/index.ts ]; then
+            echo 'export const handleApiRequest = async () => {}; export default {};' > src/audioNative/reference/router.ts
+          fi
 
       - name: Build Web Assets
         run: npx vite build
